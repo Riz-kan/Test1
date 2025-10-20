@@ -565,11 +565,43 @@
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
-        prevActive = opener || document.activeElement;
+        const openerEl = opener && opener.el ? opener.el : opener;
+        const openerPoint = (opener && typeof opener === 'object' && !('nodeType' in opener) &&
+          typeof opener.x === 'number' && typeof opener.y === 'number') ? opener : null;
+        prevActive = openerEl || document.activeElement;
 
         requestAnimationFrame(() => {
           measureBase();
           setSlide(index);
+          // --- Entry animation ---
+          const stageRect = stage.getBoundingClientRect();
+          let startScale = Math.min((/Mobi|Android/i.test(navigator.userAgent) ? 0.6 : 0.72), state.max);
+
+          // click deltas relative to stage center (fallback center if no opener)
+          let cx = 0, cy = 0;
+          if (openerPoint) {
+            cx = openerPoint.x - (stageRect.left + stageRect.width / 2);
+            cy = openerPoint.y - (stageRect.top + stageRect.height / 2);
+          }
+
+          // initialize at a small scale near the click
+          state.scale = startScale;
+          state.tx = cx * (1 - startScale);
+          state.ty = cy * (1 - startScale);
+          apply();
+
+          // animate to rest
+          const D = 280; // ms
+          const easing = 'cubic-bezier(.2,.8,.2,1)';
+          zoomedImage.style.transition = `transform ${D}ms ${easing}`;
+          requestAnimationFrame(() => {
+            state.scale = 1;
+            state.tx = 0;
+            state.ty = 0;
+            apply();
+            setTimeout(() => { zoomedImage.style.transition = ''; }, D + 20);
+          });
+          // --- /Entry animation ---
           trapFocus();
           zoomToggle?.focus();
         });

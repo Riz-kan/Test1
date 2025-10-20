@@ -476,7 +476,7 @@
         thumb.addEventListener('click', () => {
           setActiveImage(i);
         });
-        thumb.addEventListener('dblclick', () => openZoomAt(i, thumb));
+        thumb.addEventListener('dblclick', (event) => openZoomAt(i, thumb, event));
         thumbsDiv.appendChild(thumb);
       });
     }
@@ -494,9 +494,9 @@
         img.draggable = false;
         img.setAttribute('role', 'group');
         img.setAttribute('aria-label', `Image ${i + 1} of ${images.length}`);
-        img.addEventListener('click', () => {
+        img.addEventListener('click', (event) => {
           setActiveImage(i);
-          openZoomAt(i, img);
+          openZoomAt(i, img, event);
         });
         mobileImageStrip.appendChild(img);
       });
@@ -523,12 +523,22 @@
       setActiveImage(0);
     }
 
-    function openZoomAt(index, opener) {
+    function openZoomAt(index, opener, event) {
       if (!currentVariantImages.length) {
         return;
       }
       const targetIndex = typeof index === 'number' ? index : currentImageIndex;
-      zoom.openAt(targetIndex, opener);
+      let openerDetails = null;
+      if (opener) {
+        openerDetails = { el: opener };
+        if (event && typeof event.clientX === 'number' && typeof event.clientY === 'number') {
+          openerDetails.x = event.clientX;
+          openerDetails.y = event.clientY;
+        }
+      } else if (event && typeof event.clientX === 'number' && typeof event.clientY === 'number') {
+        openerDetails = { x: event.clientX, y: event.clientY };
+      }
+      zoom.openAt(targetIndex, openerDetails);
     }
 
     if (swatchWrapper) {
@@ -554,11 +564,11 @@
     selectVariant(0);
 
     if (mainImage) {
-      mainImage.addEventListener('click', () => openZoomAt(currentImageIndex, mainImage));
+      mainImage.addEventListener('click', (event) => openZoomAt(currentImageIndex, mainImage, event));
       mainImage.addEventListener('keydown', (event) => {
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          openZoomAt(currentImageIndex, mainImage);
+          openZoomAt(currentImageIndex, mainImage, event);
         }
       });
     }
