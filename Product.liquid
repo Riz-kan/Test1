@@ -392,8 +392,16 @@
     background: #fff;
     display: none;
     z-index: 999;
+    opacity: 0;
+    transform: scale(0.98);
+    transition: opacity 280ms cubic-bezier(0.33, 1, 0.68, 1), transform 320ms cubic-bezier(0.33, 1, 0.68, 1);
+    will-change: opacity, transform;
   }
-  .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.open {
+    display: block;
+    opacity: 1;
+    transform: scale(1);
+  }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -423,6 +431,16 @@
   .pdp-scope .pdp-lightbox.dragging .pdp-zoom-image {
     cursor: grabbing;
     transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .pdp-scope .pdp-lightbox {
+      transition: none;
+      transform: none;
+    }
+    .pdp-scope .pdp-lightbox.open {
+      transform: none;
+    }
   }
   .pdp-scope .pdp-lightbox .controls,
   .pdp-scope .pdp-lightbox .side-nav,
