@@ -49,9 +49,12 @@
     inset: 0;
     background: #fff;
     display: none;
+    opacity: 0;
+    transition: opacity 220ms cubic-bezier(.2, .8, .2, 1);
     z-index: 999;
   }
   .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.open.is-visible { opacity: 1; }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -183,6 +186,7 @@
   .pdp-scope .pdp-lightbox.ui-hidden .controls .btn,
   .pdp-scope .pdp-lightbox.ui-hidden .side-nav .btn { opacity: 0; }
   @media (prefers-reduced-motion: reduce) {
+    .pdp-scope .pdp-lightbox,
     .pdp-scope .pdp-lightbox .btn,
     .pdp-scope .pdp-zoom-image {
       transition: none !important;
@@ -241,6 +245,164 @@
       let firstEl = null;
       let lastEl = null;
       let prevActive = null;
+      const reduceMotionMedia = typeof window.matchMedia === 'function'
+        ? window.matchMedia('(prefers-reduced-motion: reduce)')
+        : { matches: false };
+      let prefersReducedMotion = !!reduceMotionMedia.matches;
+      const updateMotionPreference = (event) => {
+        prefersReducedMotion = !!(event && event.matches);
+      };
+      if (typeof reduceMotionMedia.addEventListener === 'function') {
+        reduceMotionMedia.addEventListener('change', updateMotionPreference);
+      } else if (typeof reduceMotionMedia.addListener === 'function') {
+        reduceMotionMedia.addListener(updateMotionPreference);
+      }
+      let entryAnimationController = null;
+      let closeTransitionCleanup = null;
+      const cancelEntryAnimation = () => {
+        if (entryAnimationController) {
+          entryAnimationController.cancel();
+        }
+      };
+
+      const runEntryAnimation = (openerPoint) => {
+        if (!viewer.isOpen) {
+          return;
+        }
+        cancelEntryAnimation();
+
+        const stageRect = stage.getBoundingClientRect();
+        const centerX = stageRect.left + (stageRect.width / 2);
+        const centerY = stageRect.top + (stageRect.height / 2);
+
+        let cx = 0;
+        let cy = 0;
+        if (openerPoint && typeof openerPoint.x === 'number' && typeof openerPoint.y === 'number') {
+          cx = openerPoint.x - centerX;
+          cy = openerPoint.y - centerY;
+        }
+
+        const maxShiftX = stageRect.width * 0.45;
+        const maxShiftY = stageRect.height * 0.45;
+        cx = clamp(cx, -maxShiftX, maxShiftX);
+        cy = clamp(cy, -maxShiftY, maxShiftY);
+
+        const mobileStart = /Mobi|Android/i.test(navigator.userAgent) || (window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+        const baseStartScale = mobileStart ? 0.6 : 0.72;
+        const startScale = Math.min(state.max, baseStartScale);
+        const pointerPull = 0.85;
+        const startTx = cx * (1 - startScale) * pointerPull;
+        const startTy = cy * (1 - startScale) * pointerPull;
+
+        state.scale = startScale;
+        state.tx = startTx;
+        state.ty = startTy;
+        apply();
+
+        if (startScale >= 0.999) {
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          apply();
+          entryAnimationController = null;
+          return;
+        }
+
+        if (prefersReducedMotion) {
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          apply();
+          entryAnimationController = null;
+          return;
+        }
+
+        const overshootScale = Math.min(state.max, 1.035);
+        const keyframes = [
+          { transform: `translate3d(${startTx}px, ${startTy}px, 0) scale(${startScale})` }
+        ];
+        if (overshootScale > 1.0005) {
+          const overshootPull = 0.55;
+          const overshootTx = cx * (1 - overshootScale) * overshootPull;
+          const overshootTy = cy * (1 - overshootScale) * overshootPull;
+          keyframes.push({
+            transform: `translate3d(${overshootTx}px, ${overshootTy}px, 0) scale(${overshootScale})`,
+            offset: 0.68
+          });
+        }
+        keyframes.push({ transform: 'translate3d(0, 0, 0) scale(1)' });
+
+        const easing = 'cubic-bezier(.16,.94,.3,1)';
+        const duration = overshootScale > 1.0005 ? 360 : 300;
+
+        if (typeof zoomedImage.animate === 'function') {
+          const animation = zoomedImage.animate(keyframes, {
+            duration,
+            easing,
+            fill: 'forwards'
+          });
+
+          const controller = {
+            done: false,
+            cancel() {
+              if (this.done) return;
+              this.done = true;
+              animation.cancel();
+              state.scale = 1;
+              state.tx = 0;
+              state.ty = 0;
+              apply();
+              entryAnimationController = null;
+            }
+          };
+
+          const finalize = () => {
+            if (controller.done) return;
+            controller.done = true;
+            state.scale = 1;
+            state.tx = 0;
+            state.ty = 0;
+            apply();
+            entryAnimationController = null;
+          };
+
+          animation.addEventListener('finish', finalize, { once: true });
+          animation.addEventListener('cancel', finalize, { once: true });
+          entryAnimationController = controller;
+        } else {
+          const controller = {
+            done: false,
+            timer: 0,
+            cancel() {
+              if (this.done) return;
+              this.done = true;
+              if (this.timer) {
+                clearTimeout(this.timer);
+                this.timer = 0;
+              }
+              zoomedImage.style.transition = '';
+              state.scale = 1;
+              state.tx = 0;
+              state.ty = 0;
+              apply();
+              entryAnimationController = null;
+            }
+          };
+
+          const fallbackDuration = duration;
+          zoomedImage.style.transition = `transform ${fallbackDuration}ms ${easing}`;
+          entryAnimationController = controller;
+
+          requestAnimationFrame(() => {
+            if (controller.done) return;
+            state.scale = 1;
+            state.tx = 0;
+            state.ty = 0;
+            apply();
+            controller.timer = window.setTimeout(() => controller.cancel(), fallbackDuration + 60);
+          });
+        }
+      };
 
       const apply = () => {
         const slideX = state.slideOffset || 0;
@@ -343,6 +505,8 @@
         if (!images.length) {
           return;
         }
+
+        cancelEntryAnimation();
 
         const previousIndex = viewer.index;
         const rawIndex = typeof index === 'number' ? index : viewer.index;
@@ -562,54 +726,62 @@
         }
         viewer.isOpen = true;
         lightbox.classList.add('open');
+        lightbox.classList.add('is-visible');
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
         const openerEl = opener && opener.el ? opener.el : opener;
-        const openerPoint = (opener && typeof opener === 'object' && !('nodeType' in opener) &&
+        let openerPoint = (opener && typeof opener === 'object' && !('nodeType' in opener) &&
           typeof opener.x === 'number' && typeof opener.y === 'number') ? opener : null;
+        if (!openerPoint && openerEl && openerEl.getBoundingClientRect) {
+          const rect = openerEl.getBoundingClientRect();
+          openerPoint = {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2
+          };
+        }
         prevActive = openerEl || document.activeElement;
 
+        const scheduleEntry = () => {
+          if (!viewer.isOpen) return;
+          requestAnimationFrame(() => {
+            if (!viewer.isOpen) return;
+            requestAnimationFrame(() => {
+              if (!viewer.isOpen) return;
+              runEntryAnimation(openerPoint);
+            });
+          });
+        };
+
         requestAnimationFrame(() => {
+          if (!viewer.isOpen) return;
           measureBase();
           setSlide(index);
-          // --- Entry animation ---
-          const stageRect = stage.getBoundingClientRect();
-          let startScale = Math.min((/Mobi|Android/i.test(navigator.userAgent) ? 0.6 : 0.72), state.max);
-
-          // click deltas relative to stage center (fallback center if no opener)
-          let cx = 0, cy = 0;
-          if (openerPoint) {
-            cx = openerPoint.x - (stageRect.left + stageRect.width / 2);
-            cy = openerPoint.y - (stageRect.top + stageRect.height / 2);
+          if (zoomedImage.complete && zoomedImage.naturalWidth > 0) {
+            scheduleEntry();
+          } else {
+            const handleEntry = () => {
+              if (!viewer.isOpen) {
+                return;
+              }
+              scheduleEntry();
+            };
+            zoomedImage.addEventListener('load', handleEntry, { once: true });
           }
-
-          // initialize at a small scale near the click
-          state.scale = startScale;
-          state.tx = cx * (1 - startScale);
-          state.ty = cy * (1 - startScale);
-          apply();
-
-          // animate to rest
-          const D = 280; // ms
-          const easing = 'cubic-bezier(.2,.8,.2,1)';
-          zoomedImage.style.transition = `transform ${D}ms ${easing}`;
-          requestAnimationFrame(() => {
-            state.scale = 1;
-            state.tx = 0;
-            state.ty = 0;
-            apply();
-            setTimeout(() => { zoomedImage.style.transition = ''; }, D + 20);
-          });
-          // --- /Entry animation ---
           trapFocus();
           zoomToggle?.focus();
         });
       }
 
       function closeLightbox() {
+        cancelEntryAnimation();
+        if (closeTransitionCleanup) {
+          closeTransitionCleanup();
+          closeTransitionCleanup = null;
+        }
         viewer.isOpen = false;
-        lightbox.classList.remove('open', 'ui-hidden', 'dragging');
+        lightbox.classList.remove('ui-hidden', 'dragging');
+        lightbox.classList.remove('is-visible');
         lightbox.setAttribute('aria-hidden', 'true');
         body.style.overflow = body.dataset.prevOverflow || '';
         pts.clear();
@@ -617,6 +789,43 @@
         startDrag = null;
         clearTimeout(idleTimer);
         releaseFocus();
+
+        if (!prefersReducedMotion && lightbox.classList.contains('open')) {
+          let closeFallback = 0;
+          const handleOpacityEnd = (event) => {
+            if (event.target !== lightbox || event.propertyName !== 'opacity') {
+              return;
+            }
+            lightbox.removeEventListener('transitionend', handleOpacityEnd);
+            if (closeFallback) {
+              clearTimeout(closeFallback);
+              closeFallback = 0;
+            }
+            lightbox.classList.remove('open');
+            closeTransitionCleanup = null;
+          };
+          lightbox.addEventListener('transitionend', handleOpacityEnd);
+          closeFallback = window.setTimeout(() => {
+            lightbox.removeEventListener('transitionend', handleOpacityEnd);
+            if (closeFallback) {
+              clearTimeout(closeFallback);
+              closeFallback = 0;
+            }
+            lightbox.classList.remove('open');
+            closeTransitionCleanup = null;
+          }, 260);
+          closeTransitionCleanup = () => {
+            lightbox.removeEventListener('transitionend', handleOpacityEnd);
+            if (closeFallback) {
+              clearTimeout(closeFallback);
+              closeFallback = 0;
+            }
+            lightbox.classList.remove('open');
+          };
+        } else {
+          lightbox.classList.remove('open');
+          closeTransitionCleanup = null;
+        }
       }
 
       closeBtn.addEventListener('click', closeLightbox);
