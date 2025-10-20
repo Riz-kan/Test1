@@ -34,8 +34,8 @@
     <!-- RIGHT: Product Info & Form -->
     <div class="product-form">
       <p class="product-label">NEW ARRIVAL</p>
-      <h1 class="product-title">CloudNine Hanging Rest Spot</h1>
       {% assign pdp_product = product | default: closest.product %}
+      <h1 class="product-title">{{ pdp_product.title }}</h1>
       <div class="product-price">
         {% render 'price', product_resource: pdp_product %}
       </div>
