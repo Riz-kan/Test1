@@ -390,7 +390,9 @@
     position: fixed;
     inset: 0;
     background: #fff;
-    display: none;
+    display: block;
+    visibility: hidden;
+    pointer-events: none;
     z-index: 999;
     opacity: 0;
     transform: scale(0.98);
@@ -399,6 +401,8 @@
   }
   .pdp-scope .pdp-lightbox.open {
     display: block;
+    visibility: visible;
+    pointer-events: auto;
     opacity: 1;
     transform: scale(1);
   }
