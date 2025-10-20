@@ -258,11 +258,43 @@
         reduceMotionMedia.addListener(updateMotionPreference);
       }
       let closeTransitionCleanup = null;
+      let entryAnimation = null;
+      let entryAnimating = false;
+      let fallbackEntryTimer = 0;
+      const supportsWAAPI = typeof zoomedImage.animate === 'function';
+
+      const finishEntryAnimation = () => {
+        if (fallbackEntryTimer) {
+          clearTimeout(fallbackEntryTimer);
+          fallbackEntryTimer = 0;
+        }
+        if (entryAnimation) {
+          entryAnimation.onfinish = null;
+          entryAnimation.oncancel = null;
+          entryAnimation = null;
+        }
+        entryAnimating = false;
+        zoomedImage.style.willChange = '';
+        zoomedImage.style.transition = '';
+        apply(true);
+      };
+
+      const cancelEntryAnimation = () => {
+        if (entryAnimation) {
+          entryAnimation.cancel();
+          return;
+        }
+        if (entryAnimating) {
+          finishEntryAnimation();
+        }
+      };
 
       const runEntryAnimation = (openerPoint) => {
         if (!viewer.isOpen) {
           return;
         }
+
+        cancelEntryAnimation();
 
         const stageRect = stage.getBoundingClientRect();
         const centerX = stageRect.left + (stageRect.width / 2);
@@ -288,42 +320,84 @@
           state.scale = 1;
           state.tx = 0;
           state.ty = 0;
-          apply();
+          entryAnimating = false;
+          zoomedImage.style.willChange = '';
           zoomedImage.style.transition = '';
+          apply(true);
           return;
         }
 
+        const startTx = cx * (1 - startScale);
+        const startTy = cy * (1 - startScale);
+        const slideX = state.slideOffset || 0;
+        const startTransform = `translate3d(${startTx + slideX}px, ${startTy}px, 0) scale(${startScale})`;
+        const overshootScale = Math.min(state.max, 1.04);
+        const overshootTx = startTx * 0.18;
+        const overshootTy = startTy * 0.18;
+        const overshootTransform = `translate3d(${overshootTx + slideX}px, ${overshootTy}px, 0) scale(${overshootScale})`;
+        const finalTransform = `translate3d(${slideX}px, 0px, 0) scale(1)`;
+
+        entryAnimating = true;
+        zoomedImage.style.willChange = 'transform';
         zoomedImage.style.transition = 'none';
-        state.scale = startScale;
-        state.tx = cx * (1 - startScale);
-        state.ty = cy * (1 - startScale);
+        zoomedImage.style.transform = startTransform;
+
+        state.scale = 1;
+        state.tx = 0;
+        state.ty = 0;
         apply();
 
-        const duration = 280;
-        const easing = 'cubic-bezier(.2,.8,.2,1)';
-
-        requestAnimationFrame(() => {
-          if (!viewer.isOpen) {
-            zoomedImage.style.transition = '';
-            return;
-          }
-          zoomedImage.style.transition = `transform ${duration}ms ${easing}`;
-          state.scale = 1;
-          state.tx = 0;
-          state.ty = 0;
-          apply();
-          window.setTimeout(() => {
-            if (zoomedImage.style.transition && zoomedImage.style.transition.includes('transform')) {
-              zoomedImage.style.transition = '';
+        if (supportsWAAPI && !prefersReducedMotion) {
+          entryAnimation = zoomedImage.animate(
+            [
+              { transform: startTransform, easing: 'cubic-bezier(.16,.68,.32,1)' },
+              { transform: overshootTransform, offset: 0.62, easing: 'cubic-bezier(.12,.74,.28,1)' },
+              { transform: finalTransform, offset: 1, easing: 'cubic-bezier(.19,.86,.24,1)' }
+            ],
+            {
+              duration: 360,
+              fill: 'forwards',
+              composite: 'replace'
             }
-          }, duration + 40);
-        });
+          );
+          const handleFinish = () => {
+            finishEntryAnimation();
+          };
+          entryAnimation.onfinish = handleFinish;
+          entryAnimation.oncancel = handleFinish;
+        } else {
+          const duration = 300;
+          const easing = 'cubic-bezier(.2,.82,.3,1)';
+          const handleTransitionEnd = (event) => {
+            if (event.target !== zoomedImage || event.propertyName !== 'transform') {
+              return;
+            }
+            zoomedImage.removeEventListener('transitionend', handleTransitionEnd);
+            finishEntryAnimation();
+          };
+          zoomedImage.addEventListener('transitionend', handleTransitionEnd);
+          fallbackEntryTimer = window.setTimeout(() => {
+            zoomedImage.removeEventListener('transitionend', handleTransitionEnd);
+            finishEntryAnimation();
+          }, duration + 60);
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              if (!entryAnimating) {
+                return;
+              }
+              zoomedImage.style.transition = `transform ${duration}ms ${easing}`;
+              zoomedImage.style.transform = finalTransform;
+            });
+          });
+        }
       };
 
-      const apply = () => {
+      const apply = (forceTransform = false) => {
         const slideX = state.slideOffset || 0;
-        zoomedImage.style.transform =
-          `translate3d(${state.tx + slideX}px, ${state.ty}px, 0) scale(${state.scale})`;
+        if (forceTransform || !entryAnimating) {
+          zoomedImage.style.transform =
+            `translate3d(${state.tx + slideX}px, ${state.ty}px, 0) scale(${state.scale})`;
+        }
         const needsReset = (state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1);
         if (zoomToggle) {
           zoomToggle.innerHTML = needsReset ? iconZoomReset : iconZoomIn;
@@ -400,6 +474,7 @@
       }
 
       function resetView() {
+        cancelEntryAnimation();
         state.scale = 1;
         state.tx = 0;
         state.ty = 0;
@@ -408,6 +483,9 @@
       }
 
       function zoomAt(cx, cy, nextScale) {
+        if (entryAnimating) {
+          cancelEntryAnimation();
+        }
         const target = clamp(nextScale, state.min, state.max);
         const prevScale = state.scale;
         if (target === prevScale) return;
@@ -421,6 +499,8 @@
         if (!images.length) {
           return;
         }
+
+        cancelEntryAnimation();
 
         const previousIndex = viewer.index;
         const rawIndex = typeof index === 'number' ? index : viewer.index;
@@ -688,6 +768,7 @@
       }
 
       function closeLightbox() {
+        cancelEntryAnimation();
         if (closeTransitionCleanup) {
           closeTransitionCleanup();
           closeTransitionCleanup = null;
@@ -787,6 +868,9 @@
 
       stage.addEventListener('pointerdown', (event) => {
         if (!viewer.isOpen) return;
+        if (entryAnimating) {
+          cancelEntryAnimation();
+        }
         stage.setPointerCapture(event.pointerId);
         pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
         if (pts.size === 1) {
@@ -877,6 +961,9 @@
 
       stage.addEventListener('wheel', (event) => {
         if (!viewer.isOpen) return;
+        if (entryAnimating) {
+          cancelEntryAnimation();
+        }
         event.preventDefault();
         const factor = Math.exp(-event.deltaY * 0.0015);
         const rect = stage.getBoundingClientRect();
