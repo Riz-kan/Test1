@@ -257,19 +257,12 @@
       } else if (typeof reduceMotionMedia.addListener === 'function') {
         reduceMotionMedia.addListener(updateMotionPreference);
       }
-      let entryAnimationController = null;
       let closeTransitionCleanup = null;
-      const cancelEntryAnimation = () => {
-        if (entryAnimationController) {
-          entryAnimationController.cancel();
-        }
-      };
 
       const runEntryAnimation = (openerPoint) => {
         if (!viewer.isOpen) {
           return;
         }
-        cancelEntryAnimation();
 
         const stageRect = stage.getBoundingClientRect();
         const centerX = stageRect.left + (stageRect.width / 2);
@@ -287,121 +280,44 @@
         cx = clamp(cx, -maxShiftX, maxShiftX);
         cy = clamp(cy, -maxShiftY, maxShiftY);
 
-        const mobileStart = /Mobi|Android/i.test(navigator.userAgent) || (window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
-        const baseStartScale = mobileStart ? 0.6 : 0.72;
+        const isMobile = /Mobi|Android/i.test(navigator.userAgent) || (window.matchMedia && window.matchMedia('(max-width: 768px)').matches);
+        const baseStartScale = isMobile ? 0.6 : 0.72;
         const startScale = Math.min(state.max, baseStartScale);
-        const pointerPull = 0.85;
-        const startTx = cx * (1 - startScale) * pointerPull;
-        const startTy = cy * (1 - startScale) * pointerPull;
 
+        if (startScale >= 0.999 || prefersReducedMotion) {
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          apply();
+          zoomedImage.style.transition = '';
+          return;
+        }
+
+        zoomedImage.style.transition = 'none';
         state.scale = startScale;
-        state.tx = startTx;
-        state.ty = startTy;
+        state.tx = cx * (1 - startScale);
+        state.ty = cy * (1 - startScale);
         apply();
 
-        if (startScale >= 0.999) {
+        const duration = 280;
+        const easing = 'cubic-bezier(.2,.8,.2,1)';
+
+        requestAnimationFrame(() => {
+          if (!viewer.isOpen) {
+            zoomedImage.style.transition = '';
+            return;
+          }
+          zoomedImage.style.transition = `transform ${duration}ms ${easing}`;
           state.scale = 1;
           state.tx = 0;
           state.ty = 0;
           apply();
-          entryAnimationController = null;
-          return;
-        }
-
-        if (prefersReducedMotion) {
-          state.scale = 1;
-          state.tx = 0;
-          state.ty = 0;
-          apply();
-          entryAnimationController = null;
-          return;
-        }
-
-        const overshootScale = Math.min(state.max, 1.035);
-        const keyframes = [
-          { transform: `translate3d(${startTx}px, ${startTy}px, 0) scale(${startScale})` }
-        ];
-        if (overshootScale > 1.0005) {
-          const overshootPull = 0.55;
-          const overshootTx = cx * (1 - overshootScale) * overshootPull;
-          const overshootTy = cy * (1 - overshootScale) * overshootPull;
-          keyframes.push({
-            transform: `translate3d(${overshootTx}px, ${overshootTy}px, 0) scale(${overshootScale})`,
-            offset: 0.68
-          });
-        }
-        keyframes.push({ transform: 'translate3d(0, 0, 0) scale(1)' });
-
-        const easing = 'cubic-bezier(.16,.94,.3,1)';
-        const duration = overshootScale > 1.0005 ? 360 : 300;
-
-        if (typeof zoomedImage.animate === 'function') {
-          const animation = zoomedImage.animate(keyframes, {
-            duration,
-            easing,
-            fill: 'forwards'
-          });
-
-          const controller = {
-            done: false,
-            cancel() {
-              if (this.done) return;
-              this.done = true;
-              animation.cancel();
-              state.scale = 1;
-              state.tx = 0;
-              state.ty = 0;
-              apply();
-              entryAnimationController = null;
-            }
-          };
-
-          const finalize = () => {
-            if (controller.done) return;
-            controller.done = true;
-            state.scale = 1;
-            state.tx = 0;
-            state.ty = 0;
-            apply();
-            entryAnimationController = null;
-          };
-
-          animation.addEventListener('finish', finalize, { once: true });
-          animation.addEventListener('cancel', finalize, { once: true });
-          entryAnimationController = controller;
-        } else {
-          const controller = {
-            done: false,
-            timer: 0,
-            cancel() {
-              if (this.done) return;
-              this.done = true;
-              if (this.timer) {
-                clearTimeout(this.timer);
-                this.timer = 0;
-              }
+          window.setTimeout(() => {
+            if (zoomedImage.style.transition && zoomedImage.style.transition.includes('transform')) {
               zoomedImage.style.transition = '';
-              state.scale = 1;
-              state.tx = 0;
-              state.ty = 0;
-              apply();
-              entryAnimationController = null;
             }
-          };
-
-          const fallbackDuration = duration;
-          zoomedImage.style.transition = `transform ${fallbackDuration}ms ${easing}`;
-          entryAnimationController = controller;
-
-          requestAnimationFrame(() => {
-            if (controller.done) return;
-            state.scale = 1;
-            state.tx = 0;
-            state.ty = 0;
-            apply();
-            controller.timer = window.setTimeout(() => controller.cancel(), fallbackDuration + 60);
-          });
-        }
+          }, duration + 40);
+        });
       };
 
       const apply = () => {
@@ -505,8 +421,6 @@
         if (!images.length) {
           return;
         }
-
-        cancelEntryAnimation();
 
         const previousIndex = viewer.index;
         const rawIndex = typeof index === 'number' ? index : viewer.index;
@@ -774,7 +688,6 @@
       }
 
       function closeLightbox() {
-        cancelEntryAnimation();
         if (closeTransitionCleanup) {
           closeTransitionCleanup();
           closeTransitionCleanup = null;
