@@ -35,7 +35,10 @@
     <div class="product-form">
       <p class="product-label">NEW ARRIVAL</p>
       <h1 class="product-title">CloudNine Hanging Rest Spot</h1>
-      <p class="product-price">$19.99</p>
+      {% assign pdp_product = product | default: closest.product %}
+      <div class="product-price">
+        {% render 'price', product_resource: pdp_product %}
+      </div>
 
       <!-- Selling points (with top/bottom dividers) -->
       <div class="sp-block" aria-label="Product highlights">
