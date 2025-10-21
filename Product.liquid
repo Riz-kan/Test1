@@ -392,8 +392,20 @@
     background: #fff;
     display: none;
     z-index: 999;
+    opacity: 0;
+    transform: scale(0.985);
+    transition: opacity 0.26s ease, transform 0.34s cubic-bezier(.22, 1, .36, 1);
   }
   .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.is-visible {
+    opacity: 1;
+    transform: scale(1);
+  }
+  .pdp-scope .pdp-lightbox.measuring {
+    display: block;
+    visibility: hidden;
+    opacity: 0;
+  }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -463,6 +475,24 @@
     justify-content: center;
     gap: 10px;
   }
+  .pdp-scope .pdp-lightbox .zoom-hint {
+    position: absolute;
+    bottom: 96px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(17, 17, 17, 0.85);
+    color: #fff;
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 12px;
+    letter-spacing: 0.01em;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.36s ease;
+    z-index: 4;
+    white-space: nowrap;
+  }
+  .pdp-scope .pdp-lightbox .zoom-hint.visible { opacity: 1; }
   .pdp-scope .pdp-lightbox .btn {
     width: var(--pdp-zoom-btn-size);
     height: var(--pdp-zoom-btn-size);
@@ -527,6 +557,12 @@
   @media (prefers-reduced-motion: reduce) {
     .pdp-scope .pdp-lightbox .btn,
     .pdp-scope .pdp-zoom-image {
+      transition: none !important;
+    }
+    .pdp-scope .pdp-lightbox {
+      transition: none !important;
+    }
+    .pdp-scope .pdp-lightbox .zoom-hint {
       transition: none !important;
     }
   }
@@ -855,11 +891,27 @@
         };
       }
 
+      let hint = lightbox.querySelector('.zoom-hint');
+      if (!hint) {
+        hint = document.createElement('div');
+        hint.className = 'zoom-hint';
+        hint.setAttribute('aria-hidden', 'true');
+        hint.textContent = 'Scroll/pinch to zoom. Drag to pan.';
+        lightbox.appendChild(hint);
+      }
+
       const body = document.body;
       const state = { scale: 1, min: 1, max: 6, tx: 0, ty: 0, slideOffset: 0, baseW: 0, baseH: 0, viewW: 0, viewH: 0 };
-      const viewer = { index: 0, isOpen: false };
+      const viewer = { index: 0, isOpen: false, isAnimating: false, animationPhase: null, opener: null, openScroll: null };
       const pts = new Map();
       const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+      const prefersReducedMotion = () =>
+        typeof window !== 'undefined' &&
+        typeof window.matchMedia === 'function' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const rectIsUsable = (rect) => rect && rect.width > 0 && rect.height > 0;
+      const rectIsOnscreen = (rect) =>
+        rectIsUsable(rect) && rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
       const SWIPE_HORIZONTAL_THRESHOLD = 48;
       const SWIPE_VERTICAL_LIMIT = 40;
       const HYSTERESIS = 8; // px
@@ -875,6 +927,14 @@
       let firstEl = null;
       let lastEl = null;
       let prevActive = null;
+      let openTransitionTimer = null;
+      let openUITimer = null;
+      let closeTransitionTimer = null;
+      let resetTimer = null;
+      let finishOpenAnimation = null;
+      let hintTimer = null;
+      let hintShown = false;
+      let resetEndHandler = null;
 
       const apply = () => {
         const slideX = state.slideOffset || 0;
@@ -928,9 +988,16 @@
       }
 
       const showUI = () => {
+        if (!viewer.isOpen || viewer.isAnimating) {
+          return;
+        }
         lightbox.classList.remove('ui-hidden');
         clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => lightbox.classList.add('ui-hidden'), 1600);
+        idleTimer = setTimeout(() => {
+          if (viewer.isOpen && !viewer.isAnimating) {
+            lightbox.classList.add('ui-hidden');
+          }
+        }, 1600);
       };
 
       function buildDots() {
@@ -941,6 +1008,7 @@
           dot.className = 'dot';
           dot.setAttribute('aria-label', `Go to image ${i + 1}`);
           dot.addEventListener('click', () => {
+            if (viewer.isAnimating) return;
             const dir = i === viewer.index ? null : (i > viewer.index ? 'next' : 'prev');
             setSlide(i, dir);
           });
@@ -1194,43 +1262,420 @@
         if (!images.length) {
           return;
         }
+
+        if (viewer.isAnimating && viewer.animationPhase === 'open') {
+          return;
+        }
+
+        const openerEl = opener instanceof Element ? opener : null;
+        const openerRect = openerEl && typeof openerEl.getBoundingClientRect === 'function'
+          ? openerEl.getBoundingClientRect()
+          : null;
+        const scrollPos = {
+          x: window.scrollX ?? window.pageXOffset ?? 0,
+          y: window.scrollY ?? window.pageYOffset ?? 0
+        };
+
+        if (finishOpenAnimation) {
+          finishOpenAnimation();
+        }
+        if (openTransitionTimer) {
+          clearTimeout(openTransitionTimer);
+          openTransitionTimer = null;
+        }
+        if (openUITimer) {
+          clearTimeout(openUITimer);
+          openUITimer = null;
+        }
+        if (closeTransitionTimer) {
+          clearTimeout(closeTransitionTimer);
+          closeTransitionTimer = null;
+        }
+        if (resetTimer) {
+          clearTimeout(resetTimer);
+          resetTimer = null;
+        }
+        if (resetEndHandler) {
+          zoomedImage.removeEventListener('transitionend', resetEndHandler);
+          resetEndHandler = null;
+        }
+
         viewer.isOpen = true;
-        lightbox.classList.add('open');
+        viewer.isAnimating = true;
+        viewer.animationPhase = 'open';
+        viewer.opener = openerEl || null;
+        viewer.openScroll = scrollPos;
+
+        lightbox.classList.add('open', 'measuring', 'ui-hidden');
+        lightbox.classList.remove('is-visible', 'dragging');
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
-        prevActive = opener || document.activeElement;
+        prevActive = openerEl || document.activeElement;
+        trapFocus();
 
-        requestAnimationFrame(() => {
+        const reduceMotion = prefersReducedMotion();
+
+        const startAnimation = () => {
+          if (!viewer.isOpen) {
+            return;
+          }
+          if (raf) {
+            cancelAnimationFrame(raf);
+            raf = null;
+          }
+
           measureBase();
-          setSlide(index);
-          trapFocus();
-          zoomToggle?.focus();
-        });
+
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          state.slideOffset = 0;
+
+          const zoomRect = zoomedImage.getBoundingClientRect();
+          const hasZoomRect = rectIsUsable(zoomRect);
+          const hasOpRect = rectIsUsable(openerRect);
+
+          let dx = 0;
+          let dy = 0;
+          let scale = hasZoomRect ? 0.6 : 1;
+
+          if (hasZoomRect && hasOpRect) {
+            const opCX = openerRect.left + openerRect.width / 2;
+            const opCY = openerRect.top + openerRect.height / 2;
+            const zoomCX = zoomRect.left + zoomRect.width / 2;
+            const zoomCY = zoomRect.top + zoomRect.height / 2;
+            dx = opCX - zoomCX;
+            dy = opCY - zoomCY;
+            const sx = openerRect.width / (zoomRect.width || 1);
+            const sy = openerRect.height / (zoomRect.height || 1);
+            scale = Math.max(0.05, Math.min(sx, sy || sx));
+          }
+
+          lightbox.classList.remove('measuring');
+          lightbox.style.willChange = 'opacity, transform';
+          zoomedImage.style.willChange = 'transform';
+
+          let openEndHandler = null;
+          let finished = false;
+
+          const cleanup = () => {
+            if (finished) return;
+            finished = true;
+            if (openEndHandler) {
+              zoomedImage.removeEventListener('transitionend', openEndHandler);
+            }
+            if (openTransitionTimer) {
+              clearTimeout(openTransitionTimer);
+              openTransitionTimer = null;
+            }
+            finishOpenAnimation = null;
+            viewer.isAnimating = false;
+            viewer.animationPhase = null;
+            lightbox.style.willChange = '';
+            zoomedImage.style.willChange = '';
+            zoomedImage.style.transition = '';
+            zoomedImage.style.transform = 'translate3d(0, 0, 0) scale(1)';
+            if (!lightbox.classList.contains('is-visible')) {
+              lightbox.classList.add('is-visible');
+            }
+            if (openUITimer) {
+              clearTimeout(openUITimer);
+            }
+            openUITimer = setTimeout(() => {
+              showUI();
+            }, reduceMotion ? 0 : 120);
+            if (!hintShown && hint) {
+              hintShown = true;
+              hint.classList.add('visible');
+              if (hintTimer) {
+                clearTimeout(hintTimer);
+              }
+              hintTimer = setTimeout(() => {
+                hint.classList.remove('visible');
+              }, 1200);
+            }
+            const focusDelay = reduceMotion ? 0 : 320;
+            setTimeout(() => {
+              if (viewer.isOpen) {
+                zoomToggle?.focus();
+              }
+            }, focusDelay);
+          };
+
+          finishOpenAnimation = cleanup;
+
+          if (reduceMotion || !hasZoomRect) {
+            requestAnimationFrame(() => {
+              lightbox.classList.add('is-visible');
+              cleanup();
+            });
+            return;
+          }
+
+          zoomedImage.style.transition = 'none';
+          zoomedImage.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(${scale})`;
+          void zoomedImage.offsetWidth;
+          zoomedImage.style.transition = 'transform 0.32s cubic-bezier(.22,1,.36,1)';
+
+          openEndHandler = (event) => {
+            if (event.propertyName !== 'transform') return;
+            cleanup();
+          };
+          zoomedImage.addEventListener('transitionend', openEndHandler);
+          openTransitionTimer = setTimeout(cleanup, 440);
+
+          requestAnimationFrame(() => {
+            lightbox.classList.add('is-visible');
+            zoomedImage.style.transform = 'translate3d(0, 0, 0) scale(1)';
+          });
+        };
+
+        const ready = () => {
+          zoomedImage.removeEventListener('load', ready);
+          zoomedImage.removeEventListener('error', ready);
+          requestAnimationFrame(startAnimation);
+        };
+
+        setSlide(index);
+
+        if (zoomedImage.complete && zoomedImage.naturalWidth > 0) {
+          ready();
+        } else {
+          zoomedImage.addEventListener('load', ready, { once: true });
+          zoomedImage.addEventListener('error', ready, { once: true });
+        }
       }
 
       function closeLightbox() {
-        viewer.isOpen = false;
-        lightbox.classList.remove('open', 'ui-hidden', 'dragging');
-        lightbox.setAttribute('aria-hidden', 'true');
-        body.style.overflow = body.dataset.prevOverflow || '';
-        pts.clear();
-        pinchStart = null;
-        startDrag = null;
+        if (!viewer.isOpen) {
+          return;
+        }
+
+        if (viewer.isAnimating && viewer.animationPhase === 'close') {
+          return;
+        }
+
+        if (viewer.isAnimating && viewer.animationPhase === 'open' && finishOpenAnimation) {
+          finishOpenAnimation();
+        }
+
+        viewer.isAnimating = true;
+        viewer.animationPhase = 'close';
+
+        lightbox.classList.add('ui-hidden');
+        lightbox.classList.remove('dragging');
+        if (openTransitionTimer) {
+          clearTimeout(openTransitionTimer);
+          openTransitionTimer = null;
+        }
+        if (openUITimer) {
+          clearTimeout(openUITimer);
+          openUITimer = null;
+        }
+        if (closeTransitionTimer) {
+          clearTimeout(closeTransitionTimer);
+          closeTransitionTimer = null;
+        }
+        if (resetTimer) {
+          clearTimeout(resetTimer);
+          resetTimer = null;
+        }
+        if (resetEndHandler) {
+          zoomedImage.removeEventListener('transitionend', resetEndHandler);
+          resetEndHandler = null;
+        }
+        if (hintTimer) {
+          clearTimeout(hintTimer);
+          hintTimer = null;
+        }
+        hint?.classList.remove('visible');
         clearTimeout(idleTimer);
-        releaseFocus();
+        idleTimer = null;
+
+        const reduceMotion = prefersReducedMotion();
+        let closed = false;
+
+        const finalizeClose = () => {
+          if (closed) {
+            return;
+          }
+          closed = true;
+          viewer.isOpen = false;
+          viewer.isAnimating = false;
+          viewer.animationPhase = null;
+          lightbox.classList.remove('open', 'is-visible', 'measuring', 'dragging');
+          lightbox.classList.remove('ui-hidden');
+          lightbox.setAttribute('aria-hidden', 'true');
+          lightbox.style.willChange = '';
+          zoomedImage.style.willChange = '';
+          zoomedImage.style.transition = '';
+          zoomedImage.style.transform = 'translate3d(0, 0, 0) scale(1)';
+          body.style.overflow = body.dataset.prevOverflow || '';
+          if (raf) {
+            cancelAnimationFrame(raf);
+            raf = null;
+          }
+          pts.clear();
+          pinchStart = null;
+          startDrag = null;
+          swipeIntent = null;
+          if (closeTransitionTimer) {
+            clearTimeout(closeTransitionTimer);
+            closeTransitionTimer = null;
+          }
+          if (resetTimer) {
+            clearTimeout(resetTimer);
+            resetTimer = null;
+          }
+          if (resetEndHandler) {
+            zoomedImage.removeEventListener('transitionend', resetEndHandler);
+            resetEndHandler = null;
+          }
+          viewer.opener = null;
+          viewer.openScroll = null;
+          releaseFocus();
+        };
+
+        const startFlip = () => {
+          if (raf) {
+            cancelAnimationFrame(raf);
+            raf = null;
+          }
+
+          const zoomRect = zoomedImage.getBoundingClientRect();
+          const openerRect = viewer.opener && typeof viewer.opener.getBoundingClientRect === 'function'
+            ? viewer.opener.getBoundingClientRect()
+            : null;
+          const usableZoom = rectIsUsable(zoomRect);
+          const usableOpener = rectIsOnscreen(openerRect);
+
+          let dx = 0;
+          let dy = 0;
+          let scale = usableZoom ? 0.6 : 1;
+
+          if (usableZoom && usableOpener) {
+            const opCX = openerRect.left + openerRect.width / 2;
+            const opCY = openerRect.top + openerRect.height / 2;
+            const zoomCX = zoomRect.left + zoomRect.width / 2;
+            const zoomCY = zoomRect.top + zoomRect.height / 2;
+            dx = opCX - zoomCX;
+            dy = opCY - zoomCY;
+            const sx = openerRect.width / (zoomRect.width || 1);
+            const sy = openerRect.height / (zoomRect.height || 1);
+            scale = Math.max(0.05, Math.min(sx, sy || sx));
+          } else if (!usableZoom) {
+            scale = 1;
+          }
+
+          lightbox.style.willChange = 'opacity, transform';
+          zoomedImage.style.willChange = 'transform';
+
+          let closeEndHandler = null;
+          let finished = false;
+
+          const finish = () => {
+            if (finished) {
+              return;
+            }
+            finished = true;
+            if (closeEndHandler) {
+              zoomedImage.removeEventListener('transitionend', closeEndHandler);
+            }
+            if (closeTransitionTimer) {
+              clearTimeout(closeTransitionTimer);
+              closeTransitionTimer = null;
+            }
+            finalizeClose();
+          };
+
+          if (reduceMotion || !usableZoom) {
+            lightbox.classList.remove('is-visible');
+            finish();
+            return;
+          }
+
+          zoomedImage.style.transition = 'transform 0.32s cubic-bezier(.22,1,.36,1)';
+
+          closeEndHandler = (event) => {
+            if (event.propertyName !== 'transform') {
+              return;
+            }
+            finish();
+          };
+          zoomedImage.addEventListener('transitionend', closeEndHandler);
+          closeTransitionTimer = setTimeout(finish, 440);
+
+          requestAnimationFrame(() => {
+            lightbox.classList.remove('is-visible');
+            zoomedImage.style.transform = `translate3d(${dx}px, ${dy}px, 0) scale(${scale})`;
+          });
+        };
+
+        const needsReset =
+          Math.abs(state.scale - 1) > 0.01 ||
+          Math.abs(state.tx) > 0.5 ||
+          Math.abs(state.ty) > 0.5 ||
+          Math.abs(state.slideOffset) > 0.5;
+
+        if (needsReset && !reduceMotion) {
+          zoomedImage.style.transition = 'transform 0.18s cubic-bezier(.22,1,.36,1)';
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          state.slideOffset = 0;
+          clampPan();
+          apply();
+          resetEndHandler = (event) => {
+            if (event.propertyName !== 'transform') {
+              return;
+            }
+            zoomedImage.removeEventListener('transitionend', resetEndHandler);
+            resetEndHandler = null;
+            zoomedImage.style.transition = '';
+            startFlip();
+          };
+          zoomedImage.addEventListener('transitionend', resetEndHandler);
+          resetTimer = setTimeout(() => {
+            if (resetEndHandler) {
+              zoomedImage.removeEventListener('transitionend', resetEndHandler);
+              resetEndHandler = null;
+            }
+            zoomedImage.style.transition = '';
+            startFlip();
+          }, 240);
+          return;
+        }
+
+        zoomedImage.style.transition = '';
+        if (reduceMotion) {
+          state.scale = 1;
+          state.tx = 0;
+          state.ty = 0;
+          state.slideOffset = 0;
+          zoomedImage.style.transform = 'translate3d(0, 0, 0) scale(1)';
+        }
+
+        startFlip();
       }
 
       closeBtn.addEventListener('click', closeLightbox);
       zoomToggle.addEventListener('click', () => {
+        if (viewer.isAnimating) return;
         if (state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1) {
           resetView();
         } else {
           zoomAt(0, 0, quickZoomScale());
         }
       });
-      prevBtn.addEventListener('click', () => setSlide(viewer.index - 1, 'prev'));
-      nextBtn.addEventListener('click', () => setSlide(viewer.index + 1, 'next'));
+      prevBtn.addEventListener('click', () => {
+        if (viewer.isAnimating) return;
+        setSlide(viewer.index - 1, 'prev');
+      });
+      nextBtn.addEventListener('click', () => {
+        if (viewer.isAnimating) return;
+        setSlide(viewer.index + 1, 'next');
+      });
 
       lightbox.addEventListener('mousemove', showUI);
       lightbox.addEventListener('click', (event) => {
@@ -1242,6 +1687,8 @@
         if (event.key === 'Escape') {
           event.preventDefault();
           closeLightbox();
+        } else if (viewer.isAnimating) {
+          return;
         } else if (event.key === 'ArrowRight') {
           event.preventDefault();
           setSlide(viewer.index + 1, 'next');
@@ -1258,6 +1705,7 @@
       });
 
       stage.addEventListener('dblclick', (event) => {
+        if (!viewer.isOpen || viewer.isAnimating) return;
         const rect = stage.getBoundingClientRect();
         const cx = event.clientX - (rect.left + rect.width / 2);
         const cy = event.clientY - (rect.top + rect.height / 2);
@@ -1266,7 +1714,7 @@
       });
 
       stage.addEventListener('pointerdown', (event) => {
-        if (!viewer.isOpen) return;
+        if (!viewer.isOpen || viewer.isAnimating) return;
         stage.setPointerCapture(event.pointerId);
         pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
         if (pts.size === 1) {
@@ -1290,6 +1738,7 @@
       });
 
       stage.addEventListener('pointermove', (event) => {
+        if (!viewer.isOpen || viewer.isAnimating) return;
         if (!pts.has(event.pointerId)) return;
         const previous = pts.get(event.pointerId);
         const current = { x: event.clientX, y: event.clientY };
@@ -1356,7 +1805,7 @@
       stage.addEventListener('pointerleave', endPointer);
 
       stage.addEventListener('wheel', (event) => {
-        if (!viewer.isOpen) return;
+        if (!viewer.isOpen || viewer.isAnimating) return;
         event.preventDefault();
         const factor = Math.exp(-event.deltaY * 0.0015);
         const rect = stage.getBoundingClientRect();
