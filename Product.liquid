@@ -878,6 +878,80 @@
     const iconZoomIn = zoomToggle.innerHTML.trim();
     const iconZoomReset = '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4 10H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
 
+    const nextFrame = () => new Promise((resolve) => requestAnimationFrame(() => resolve()));
+
+    const snapValue = (value) => {
+      const ratio = window.devicePixelRatio || 1;
+      return Math.round(value * ratio) / ratio;
+    };
+
+    const snapRect = (rect) => {
+      if (!rect) return null;
+      return {
+        left: snapValue(rect.left),
+        top: snapValue(rect.top),
+        width: Math.max(1, snapValue(rect.width)),
+        height: Math.max(1, snapValue(rect.height))
+      };
+    };
+
+    function ensureImageReady(img) {
+      if (!img) return Promise.resolve();
+      if (img.complete && img.naturalWidth > 0) {
+        return Promise.resolve();
+      }
+      if (typeof img.decode === 'function') {
+        return img.decode().catch(() => {});
+      }
+      return new Promise((resolve) => {
+        const cleanup = () => {
+          img.removeEventListener('load', cleanup);
+          img.removeEventListener('error', cleanup);
+          resolve();
+        };
+        img.addEventListener('load', cleanup, { once: true });
+        img.addEventListener('error', cleanup, { once: true });
+      });
+    }
+
+    function freezeElementMetrics(node, rect) {
+      if (!node || !rect) return () => {};
+      const style = node.style;
+      const previous = {
+        width: style.width,
+        height: style.height,
+        minWidth: style.minWidth,
+        minHeight: style.minHeight,
+        maxWidth: style.maxWidth,
+        maxHeight: style.maxHeight,
+        willChange: style.willChange
+      };
+      const widthPx = `${rect.width}px`;
+      const heightPx = `${rect.height}px`;
+      style.width = widthPx;
+      style.height = heightPx;
+      style.minWidth = widthPx;
+      style.minHeight = heightPx;
+      style.maxWidth = widthPx;
+      style.maxHeight = heightPx;
+      if (!style.willChange) {
+        style.willChange = 'transform';
+      }
+      return () => {
+        style.width = previous.width;
+        style.height = previous.height;
+        style.minWidth = previous.minWidth;
+        style.minHeight = previous.minHeight;
+        style.maxWidth = previous.maxWidth;
+        style.maxHeight = previous.maxHeight;
+        if (previous.willChange) {
+          style.willChange = previous.willChange;
+        } else {
+          style.removeProperty('will-change');
+        }
+      };
+    }
+
     function motionDuration(ms) {
       if (!reduceMotion.matches) return ms;
       return Math.max(80, Math.round(ms * 0.45));
@@ -1124,6 +1198,14 @@
       }, fadeMs + 40);
     }
 
+    function cancelHiSwap() {
+      clearTimeout(hiSwapTimer);
+      hiSwapTimer = 0;
+      frame.classList.remove('is-fading');
+      hiImage.dataset.active = 'false';
+      hiImage.removeAttribute('src');
+    }
+
     function startHiSwap(item) {
       pendingHi = item;
       if (!item || !item.hi) return;
@@ -1241,7 +1323,7 @@
       if (!images.length) {
         return;
       }
-      const { immediate = false, deferHiSwap = false, initialSrc = null } = options;
+      const { immediate = false, deferHiSwap = false, initialSrc = null, skipPrefetch = false } = options;
       clearTimeout(hiSwapTimer);
       hiSwapTimer = 0;
       const previousIndex = viewer.index;
@@ -1266,10 +1348,12 @@
       counter.textContent = `${viewer.index + 1} / ${images.length}`;
       updateDots();
 
-      prefetchPreview(viewer.index + 1);
-      prefetchPreview(viewer.index - 1);
-      preloadHi(images[(viewer.index + 1 + images.length) % images.length]);
-      preloadHi(images[(viewer.index - 1 + images.length) % images.length]);
+      if (!skipPrefetch) {
+        prefetchPreview(viewer.index + 1);
+        prefetchPreview(viewer.index - 1);
+        preloadHi(images[(viewer.index + 1 + images.length) % images.length]);
+        preloadHi(images[(viewer.index - 1 + images.length) % images.length]);
+      }
 
       if (activeSlide) {
         activeSlide.cleanup(true);
@@ -1396,6 +1480,7 @@
     let releaseFocus = () => {};
 
     function createGhost(rect, src, alt) {
+      const baseRect = snapRect(rect) || { left: 0, top: 0, width: 1, height: 1 };
       const ghost = document.createElement('img');
       ghost.src = src;
       ghost.alt = alt || '';
@@ -1407,28 +1492,36 @@
       ghost.style.transformOrigin = '0 0';
       ghost.style.pointerEvents = 'none';
       ghost.style.zIndex = '1000';
-      const baseWidth = Math.max(rect.width, 1);
-      const baseHeight = Math.max(rect.height, 1);
+      const baseWidth = Math.max(baseRect.width, 1);
+      const baseHeight = Math.max(baseRect.height, 1);
       const setRect = (r) => {
-        ghost.style.width = `${Math.max(r.width, 1)}px`;
-        ghost.style.height = `${Math.max(r.height, 1)}px`;
-        ghost.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
+        const snapped = snapRect(r);
+        if (!snapped) return;
+        ghost.style.width = `${Math.max(snapped.width, 1)}px`;
+        ghost.style.height = `${Math.max(snapped.height, 1)}px`;
+        ghost.style.transform = `translate3d(${snapped.left}px, ${snapped.top}px, 0)`;
       };
-      setRect(rect);
+      setRect(baseRect);
       return {
         element: ghost,
         animateTo(targetRect, duration, easing) {
-          const dx = targetRect.left - rect.left;
-          const dy = targetRect.top - rect.top;
-          const sx = Math.max(targetRect.width, 1) / baseWidth;
-          const sy = Math.max(targetRect.height, 1) / baseHeight;
-          return ghost.animate(
-            [
-              { transform: `translate3d(${rect.left}px, ${rect.top}px, 0) scale(1, 1)` },
-              { transform: `translate3d(${rect.left + dx}px, ${rect.top + dy}px, 0) scale(${sx}, ${sy})` }
-            ],
-            { duration, easing, fill: 'forwards' }
-          ).finished.catch(() => {});
+          const target = snapRect(targetRect);
+          if (!target) {
+            return Promise.resolve();
+          }
+          const dx = target.left - baseRect.left;
+          const dy = target.top - baseRect.top;
+          const sx = Math.max(target.width, 1) / baseWidth;
+          const sy = Math.max(target.height, 1) / baseHeight;
+          return ghost
+            .animate(
+              [
+                { transform: `translate3d(${baseRect.left}px, ${baseRect.top}px, 0) scale(1, 1)` },
+                { transform: `translate3d(${baseRect.left + dx}px, ${baseRect.top + dy}px, 0) scale(${sx}, ${sy})` }
+              ],
+              { duration, easing, fill: 'forwards' }
+            )
+            .finished.catch(() => {});
         },
         dispose() {
           ghost.remove();
@@ -1436,7 +1529,7 @@
       };
     }
 
-    function openLightbox(index, opener) {
+    async function openLightbox(index, opener) {
       if (!images.length) {
         return;
       }
@@ -1450,15 +1543,29 @@
       body.style.overflow = 'hidden';
       prevActive = opener || document.activeElement;
       toggleBackgroundInert(true);
-      setSlide(normalizedIndex, null, { immediate: true, deferHiSwap: true, initialSrc: (opener && (opener.currentSrc || opener.src)) || item.preview });
 
-      const openerRect = opener ? opener.getBoundingClientRect() : null;
-      const stageRect = frame.getBoundingClientRect();
-      frame.style.visibility = openerRect && !reduceMotion.matches ? 'hidden' : '';
+      const openerSrc =
+        (opener && (opener.currentSrc || opener.src)) ||
+        baseImage.currentSrc ||
+        baseImage.src ||
+        item.preview;
 
+      setSlide(normalizedIndex, null, {
+        immediate: true,
+        deferHiSwap: true,
+        initialSrc: openerSrc,
+        skipPrefetch: true
+      });
+
+      let finalized = false;
       const finalizeOpen = () => {
+        if (finalized) return;
+        finalized = true;
         frame.style.visibility = '';
         lightbox.classList.remove('opening');
+        if (closing || !viewer.isOpen) {
+          return;
+        }
         releaseFocus = trapFocus();
         measureBase();
         resetView();
@@ -1467,31 +1574,74 @@
         showUI();
       };
 
-      if (!reduceMotion.matches && openerRect && stageRect.width && stageRect.height) {
-        const ghost = createGhost(openerRect, (opener && (opener.currentSrc || opener.src)) || baseImage.src, opener?.alt || item.alt);
-        document.body.appendChild(ghost.element);
-        requestAnimationFrame(() => {
-          ghost.animateTo(stageRect, motionDuration(DURATIONS.open), cubicBezier).then(() => {
-            ghost.dispose();
-            finalizeOpen();
-          });
-        });
-      } else {
+      const shouldAnimate =
+        !reduceMotion.matches &&
+        opener &&
+        typeof opener.getBoundingClientRect === 'function' &&
+        opener.isConnected !== false;
+
+      if (!shouldAnimate) {
         finalizeOpen();
+        return;
       }
+
+      try {
+        await ensureImageReady(opener);
+      } catch (error) {
+        // continue with the currently painted bitmap
+      }
+
+      await nextFrame();
+      if (!opener || opener.isConnected === false) {
+        finalizeOpen();
+        return;
+      }
+      const openerRectRaw = opener.getBoundingClientRect();
+      const stageRectRaw = frame.getBoundingClientRect();
+
+      if (!openerRectRaw.width || !openerRectRaw.height || !stageRectRaw.width || !stageRectRaw.height) {
+        finalizeOpen();
+        return;
+      }
+
+      const openerRect = snapRect(openerRectRaw);
+      const stageRect = snapRect(stageRectRaw);
+
+      if (!openerRect || !stageRect) {
+        finalizeOpen();
+        return;
+      }
+
+      frame.style.visibility = 'hidden';
+      await nextFrame();
+      const ghost = createGhost(openerRect, openerSrc, opener?.alt || item.alt);
+      document.body.appendChild(ghost.element);
+      try {
+        await ghost.animateTo(stageRect, motionDuration(DURATIONS.open), cubicBezier);
+      } finally {
+        ghost.dispose();
+        frame.style.visibility = '';
+      }
+      finalizeOpen();
     }
 
-    function closeLightbox() {
+    async function closeLightbox() {
       if (!viewer.isOpen || closing) {
         return;
       }
       closing = true;
+      cancelHiSwap();
+      pendingHi = null;
+      let closeFinalized = false;
       const finishClose = () => {
+        if (closeFinalized) return;
+        closeFinalized = true;
         viewer.isOpen = false;
         closing = false;
         lightbox.classList.remove('open', 'ui-hidden', 'dragging', 'opening');
         lightbox.setAttribute('aria-hidden', 'true');
         body.style.overflow = body.dataset.prevOverflow || '';
+        delete body.dataset.prevOverflow;
         toggleBackgroundInert(false);
         pts.clear();
         pinchStart = null;
@@ -1506,23 +1656,47 @@
         openerEl = null;
         pendingHi = null;
         updateZoomToggle(false);
+        frame.style.visibility = '';
       };
 
-      const openerRect = openerEl ? openerEl.getBoundingClientRect() : null;
-      const stageRect = frame.getBoundingClientRect();
+      if (reduceMotion.matches) {
+        finishClose();
+        return;
+      }
 
-      if (!reduceMotion.matches && openerRect && stageRect.width && stageRect.height) {
-        const ghost = createGhost(stageRect, baseImage.currentSrc || baseImage.src, baseImage.alt);
+      let releaseOpener = () => {};
+      let ghost = null;
+      try {
+        await nextFrame();
+        const stageRectRaw = frame.getBoundingClientRect();
+        const openerNode = openerEl && openerEl.isConnected !== false ? openerEl : null;
+        const openerRectRaw = openerNode ? openerNode.getBoundingClientRect() : null;
+
+        if (!openerRectRaw || !openerRectRaw.width || !openerRectRaw.height || !stageRectRaw.width || !stageRectRaw.height) {
+          finishClose();
+          return;
+        }
+
+        const stageRect = snapRect(stageRectRaw);
+        const openerRect = snapRect(openerRectRaw);
+
+        if (!stageRect || !openerRect) {
+          finishClose();
+          return;
+        }
+
+        releaseOpener = freezeElementMetrics(openerNode, openerRect);
         frame.style.visibility = 'hidden';
+        ghost = createGhost(stageRect, baseImage.currentSrc || baseImage.src, baseImage.alt);
         document.body.appendChild(ghost.element);
-        requestAnimationFrame(() => {
-          ghost.animateTo(openerRect, motionDuration(DURATIONS.close), cubicBezier).then(() => {
-            ghost.dispose();
-            frame.style.visibility = '';
-            finishClose();
-          });
-        });
-      } else {
+        await nextFrame();
+        await ghost.animateTo(openerRect, motionDuration(DURATIONS.close), cubicBezier);
+      } catch (error) {
+        // fall back to instant close on failure
+      } finally {
+        ghost?.dispose?.();
+        frame.style.visibility = '';
+        releaseOpener();
         finishClose();
       }
     }
