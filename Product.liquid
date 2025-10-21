@@ -1,5 +1,6 @@
 <!-- ====== HEAD (fonts + theme globals) ====== -->
 <link rel="preconnect" href="https://fonts.gstatic.com">
+<link rel="preconnect" href="https://cdn.shopify.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500&family=Playfair+Display:wght@400;500&display=swap" rel="stylesheet">
 
 <!-- Theme globals required by product-form.js -->
@@ -26,6 +27,9 @@
         tabindex="0"
         aria-haspopup="dialog"
         aria-label="Open image gallery"
+        loading="eager"
+        decoding="async"
+        fetchpriority="high"
       />
       <!-- MOBILE: Horizontal image scroller -->
       <div class="mobile-image-strip" id="pdp-mobileImageStrip" aria-label="Product Images" tabindex="0"></div>
@@ -226,7 +230,10 @@
       </div>
       <div class="bottom" id="pdp-zoomDots"></div>
       <div class="stage" id="pdp-zoomStage">
-        <img id="pdp-zoomedImage" class="pdp-zoom-image" alt="" />
+        <div id="pdp-zoomFrame" class="pdp-zoom-frame">
+          <img id="pdp-zoomedBase" class="pdp-zoom-bitmap" data-zoom-bitmap="base" alt="" />
+          <img id="pdp-zoomedHi" class="pdp-zoom-bitmap pdp-zoom-bitmap--hi" data-zoom-bitmap="hi" alt="" aria-hidden="true" />
+        </div>
       </div>
     </div>
   </div>
@@ -334,7 +341,11 @@
   .pdp-scope .qty-display { font-size: 0.98rem; }
 
   /* Accordion compact style */
-  .pdp-scope .product-details-accordion { margin-top: 1.5rem; }
+  .pdp-scope .product-details-accordion {
+    margin-top: 1.5rem;
+    content-visibility: auto;
+    contain-intrinsic-size: 420px;
+  }
   .pdp-scope .accordion-section {
     margin-top: 1.5rem;
     padding-top: 0rem;
@@ -385,6 +396,9 @@
     --pdp-zoom-edge-gap: 18px;
     --pdp-zoom-dot: 10px;
     --pdp-zoom-ui-fade: 160ms;
+    --pdp-zoom-ease: cubic-bezier(0.22, 1, 0.36, 1);
+    --pdp-zoom-transform-speed: 0.12s;
+    --pdp-zoom-crossfade: 0.15s;
   }
   .pdp-scope .pdp-lightbox {
     position: fixed;
@@ -397,32 +411,42 @@
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
-    display: flex;
-    justify-content: center;
-    align-items: center;
     overflow: hidden;
     touch-action: none;
   }
-  .pdp-scope .pdp-zoom-image {
+  .pdp-scope .pdp-zoom-frame {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate3d(-50%, -50%, 0);
+    display: grid;
+    place-items: center;
+    transition: transform var(--pdp-zoom-transform-speed) var(--pdp-zoom-ease);
+    cursor: grab;
+  }
+  .pdp-scope .pdp-lightbox.dragging .pdp-zoom-frame { cursor: grabbing; transition: none; }
+  .pdp-scope .pdp-zoom-bitmap {
+    grid-area: 1 / 1;
     display: block;
     width: auto;
     height: auto;
     max-width: 100vw;
     max-height: 90vh;
-    cursor: grab;
     user-select: none;
     -webkit-user-drag: none;
-    will-change: transform;
-    opacity: 1;
-    transition: transform var(--pdp-zoom-transform-speed, 0.12s) ease, opacity 0.24s ease;
-    transform-origin: 50% 50%;
+    pointer-events: none;
+    transition: opacity var(--pdp-zoom-crossfade) ease;
   }
-  .pdp-scope .pdp-zoom-image.is-swapping {
+  .pdp-scope .pdp-zoom-bitmap--hi {
     opacity: 0;
+    pointer-events: none;
   }
-  .pdp-scope .pdp-lightbox.dragging .pdp-zoom-image {
-    cursor: grabbing;
-    transition: none;
+  .pdp-scope .pdp-zoom-bitmap--hi[data-active="true"] {
+    opacity: 1;
+  }
+  .pdp-scope .pdp-zoom-frame.is-fading [data-zoom-bitmap="base"],
+  .pdp-scope .pdp-zoom-frame.is-swapping [data-zoom-bitmap="base"] {
+    opacity: 0;
   }
   .pdp-scope .pdp-lightbox .controls,
   .pdp-scope .pdp-lightbox .side-nav,
@@ -485,23 +509,15 @@
     width: 15px;
     height: 15px;
   }
-  .pdp-scope .pdp-lightbox .stage.is-sliding {
-    --pdp-zoom-transform-speed: 0.36s;
-    pointer-events: none;
-  }
-  .pdp-scope .pdp-lightbox .stage.slide-next,
-  .pdp-scope .pdp-lightbox .stage.slide-prev {
-    --pdp-zoom-transform-speed: 0.36s;
-  }
-  .pdp-scope .pdp-lightbox .stage.is-sliding .pdp-zoom-image {
-    cursor: default;
-  }
-  .pdp-scope .pdp-lightbox .slide-clone {
+  .pdp-scope .pdp-lightbox .stage.is-sliding { pointer-events: none; }
+  .pdp-scope .pdp-zoom-clone {
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate3d(-50%, -50%, 0);
-    transition: transform 0.36s ease, opacity 0.24s ease;
+    display: grid;
+    place-items: center;
+    transition: transform var(--pdp-zoom-transform-speed) var(--pdp-zoom-ease), opacity var(--pdp-zoom-crossfade) ease;
     pointer-events: none;
     user-select: none;
     z-index: 2;
@@ -524,9 +540,28 @@
   .pdp-scope .pdp-lightbox .dot[aria-current="true"] { background: #111; }
   .pdp-scope .pdp-lightbox.ui-hidden .controls .btn,
   .pdp-scope .pdp-lightbox.ui-hidden .side-nav .btn { opacity: 0; }
+  .pdp-scope .pdp-zoom-ghost { will-change: transform; }
+  .pdp-scope .pdp-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 32px;
+    transform: translateX(-50%);
+    background: rgba(17, 17, 17, 0.9);
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 999px;
+    font-size: 0.85rem;
+    line-height: 1.3;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+  }
+  .pdp-scope .pdp-toast.is-visible { opacity: 1; }
   @media (prefers-reduced-motion: reduce) {
     .pdp-scope .pdp-lightbox .btn,
-    .pdp-scope .pdp-zoom-image {
+    .pdp-scope .pdp-zoom-frame,
+    .pdp-scope .pdp-zoom-bitmap,
+    .pdp-scope .pdp-zoom-clone {
       transition: none !important;
     }
   }
@@ -588,11 +623,30 @@
     let currentImageIndex = 0;
     const mainImageBaseAlt = (mainImage && mainImage.getAttribute('alt')) || 'Product image';
 
+    function withWidth(src, width) {
+      if (!src) return src;
+      try {
+        const url = new URL(src);
+        url.searchParams.set('width', String(width));
+        return url.toString();
+      } catch (error) {
+        if (src.includes('width=')) return src;
+        const join = src.includes('?') ? '&' : '?';
+        return `${src}${join}width=${width}`;
+      }
+    }
+
     function normalizeVariantImages(variant) {
-      return (variant.images || []).map((src, i) => ({
-        src,
-        alt: `${variant.title} image ${i + 1}`
-      }));
+      return (variant.images || []).map((src, i) => {
+        const preview = withWidth(src, 900);
+        return {
+          id: `${variant.id}-${i}`,
+          preview,
+          hi: withWidth(src, 1800),
+          thumb: withWidth(src, 220),
+          alt: `${variant.title} image ${i + 1}`
+        };
+      });
     }
 
     function setActiveImage(index) {
@@ -602,11 +656,13 @@
       currentImageIndex = index;
       const item = currentVariantImages[index];
       if (mainImage) {
-        mainImage.src = item.src;
+        mainImage.src = item.preview;
+        mainImage.srcset = `${withWidth(item.preview, 600)} 600w, ${withWidth(item.preview, 900)} 900w`;
+        mainImage.sizes = '(min-width: 768px) 50vw, 90vw';
         mainImage.alt = item.alt || mainImageBaseAlt;
       }
       if (addToCartComponent) {
-        addToCartComponent.dataset.productVariantMedia = item.src;
+        addToCartComponent.dataset.productVariantMedia = item.hi || item.preview;
       }
       if (thumbsDiv) {
         const thumbs = thumbsDiv.querySelectorAll('.thumbnail');
@@ -615,6 +671,7 @@
         });
       }
       zoom.setActiveIndex(index);
+      zoom.prefetch?.(index);
     }
 
     function renderThumbnails(images) {
@@ -625,7 +682,7 @@
       images.forEach((image, i) => {
         const thumb = document.createElement('img');
         thumb.className = 'thumbnail' + (i === currentImageIndex ? ' active' : '');
-        thumb.src = image.src;
+        thumb.src = image.thumb || image.preview;
         thumb.alt = image.alt || `Thumbnail ${i + 1}`;
         thumb.loading = i === 0 ? 'eager' : 'lazy';
         thumb.decoding = 'async';
@@ -645,7 +702,7 @@
       mobileImageStrip.innerHTML = '';
       images.forEach((image, i) => {
         const img = document.createElement('img');
-        img.src = image.src;
+        img.src = image.preview;
         img.loading = i === 0 ? 'eager' : 'lazy';
         img.decoding = 'async';
         img.draggable = false;
@@ -678,6 +735,7 @@
       renderMobileStrip(currentVariantImages);
       zoom.setImages(currentVariantImages);
       setActiveImage(0);
+      zoom.prefetch?.(0);
     }
 
     function openZoomAt(index, opener) {
@@ -760,626 +818,545 @@
             lastIndex = activeIndex;
             setActiveImage(activeIndex);
           }
-        }, 100);
+        }, 120);
       });
     }
+  }
 
-    const accordionContainer = pdpRoot.querySelector('.product-details-accordion');
-    if (accordionContainer) {
-      const allowMultiple = true;
-      const accordions = accordionContainer.querySelectorAll('.accordion');
+  function createZoomLightbox(scope) {
+    const lightbox = scope.querySelector('#pdp-lightbox');
+    const stage = scope.querySelector('#pdp-zoomStage');
+    const frame = stage?.querySelector('#pdp-zoomFrame');
+    const baseImage = frame?.querySelector('[data-zoom-bitmap="base"]');
+    const hiImage = frame?.querySelector('[data-zoom-bitmap="hi"]');
+    const zoomToggle = scope.querySelector('#pdp-zoomToggle');
+    const closeBtn = scope.querySelector('#pdp-closeZoom');
+    const prevBtn = scope.querySelector('#pdp-prevZoom');
+    const nextBtn = scope.querySelector('#pdp-nextZoom');
+    const dotsWrap = scope.querySelector('#pdp-zoomDots');
+    const counter = scope.querySelector('#pdp-zoomCounter');
 
-      const openAcc = (acc) => {
-        const header = acc.querySelector('.accordion-header');
-        const panel = acc.querySelector('.accordion-body');
-        const icon = acc.querySelector('.accordion-icon');
-        if (!panel || !header) return;
-        panel.style.maxHeight = panel.scrollHeight + 'px';
-        header.setAttribute('aria-expanded', 'true');
-        acc.classList.add('open');
-        if (icon) icon.textContent = '−';
+    if (!lightbox || !stage || !frame || !baseImage || !hiImage || !zoomToggle || !closeBtn || !prevBtn || !nextBtn || !dotsWrap || !counter) {
+      return {
+        setImages() {},
+        openAt() {},
+        setActiveIndex() {},
+        prefetch() {}
       };
+    }
 
-      const closeAcc = (acc) => {
-        const header = acc.querySelector('.accordion-header');
-        const panel = acc.querySelector('.accordion-body');
-        const icon = acc.querySelector('.accordion-icon');
-        if (!panel || !header) return;
-        panel.style.maxHeight = panel.scrollHeight + 'px';
-        void panel.offsetHeight;
-        panel.style.maxHeight = '0px';
-        header.setAttribute('aria-expanded', 'false');
-        acc.classList.remove('open');
-        if (icon) icon.textContent = '+';
-      };
+    const body = document.body;
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const cubicBezier = 'cubic-bezier(0.22,1,0.36,1)';
+    const DURATIONS = { transform: 120, slide: 380, open: 580, close: 520, crossfade: 150 };
 
-      const toggleAcc = (targetAcc) => {
-        const isOpen = targetAcc.classList.contains('open');
-        if (!allowMultiple) {
-          accordions.forEach((acc) => {
-            if (acc !== targetAcc) closeAcc(acc);
-          });
-        }
-        isOpen ? closeAcc(targetAcc) : openAcc(targetAcc);
-      };
+    const state = { scale: 1, min: 1, max: 6, tx: 0, ty: 0, slideOffset: 0, baseW: 0, baseH: 0, viewW: 0, viewH: 0 };
+    const viewer = { index: 0, isOpen: false };
+    const pts = new Map();
+    const hiStatus = new Map();
+    const inertTargets = new Set();
+    let images = [];
+    let pendingHi = null;
+    let openerEl = null;
+    let prevActive = null;
+    let idleTimer = null;
+    let startDrag = null;
+    let swipeIntent = null;
+    let pinchStart = null;
+    let activeSlide = null;
+    let raf = null;
+    let closing = false;
+    let toastEl = null;
+    let toastTimer = 0;
 
-      accordions.forEach((acc) => {
-        const header = acc.querySelector('.accordion-header');
-        const panel = acc.querySelector('.accordion-body');
-        const icon = acc.querySelector('.accordion-icon');
-        if (!header || !panel) return;
+    const SWIPE_HORIZONTAL_THRESHOLD = 48;
+    const SWIPE_VERTICAL_LIMIT = 40;
+    const HYSTERESIS = 10;
 
-        header.addEventListener('click', () => toggleAcc(acc));
-        header.addEventListener('keydown', (event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            toggleAcc(acc);
+    const iconZoomIn = zoomToggle.innerHTML.trim();
+    const iconZoomReset = '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4 10H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+
+    function motionDuration(ms) {
+      if (!reduceMotion.matches) return ms;
+      return Math.max(80, Math.round(ms * 0.45));
+    }
+
+    function updateMotionVars() {
+      frame.style.setProperty('--pdp-zoom-transform-speed', `${motionDuration(DURATIONS.transform)}ms`);
+      frame.style.setProperty('--pdp-zoom-crossfade', `${motionDuration(DURATIONS.crossfade)}ms`);
+      frame.style.setProperty('--pdp-zoom-ease', cubicBezier);
+    }
+    updateMotionVars();
+    reduceMotion.addEventListener('change', updateMotionVars);
+
+    function showToast(message) {
+      if (!toastEl) {
+        toastEl = document.createElement('div');
+        toastEl.className = 'pdp-toast';
+        toastEl.setAttribute('role', 'status');
+        toastEl.setAttribute('aria-live', 'polite');
+        scope.appendChild(toastEl);
+      }
+      toastEl.textContent = message;
+      toastEl.classList.add('is-visible');
+      clearTimeout(toastTimer);
+      toastTimer = window.setTimeout(() => {
+        toastEl?.classList.remove('is-visible');
+      }, 3200);
+    }
+
+    function toggleBackgroundInert(active) {
+      if (active) {
+        inertTargets.clear();
+        const zoomHost = scope.querySelector('.pdp-zoom');
+        document.body.querySelectorAll(':scope > *').forEach((node) => {
+          if (node.contains(lightbox)) {
+            scope.querySelectorAll(':scope > *').forEach((child) => {
+              if (child !== zoomHost) {
+                inertTargets.add(child);
+              }
+            });
+          } else {
+            inertTargets.add(node);
           }
         });
-
-        header.setAttribute('aria-expanded', 'false');
-        panel.style.maxHeight = '0px';
-        acc.classList.remove('open');
-        if (icon) icon.textContent = '+';
-      });
-
-      window.addEventListener('resize', () => {
-        accordionContainer.querySelectorAll('.accordion.open .accordion-body').forEach((panel) => {
-          panel.style.maxHeight = panel.scrollHeight + 'px';
+        inertTargets.forEach((node) => {
+          node.setAttribute('aria-hidden', 'true');
+          if ('inert' in node) {
+            node.inert = true;
+          } else {
+            node.setAttribute('inert', '');
+          }
         });
-      });
-
-      const firstAccordion = accordions[0];
-      if (firstAccordion) openAcc(firstAccordion);
+      } else {
+        inertTargets.forEach((node) => {
+          node.removeAttribute('aria-hidden');
+          if ('inert' in node) {
+            node.inert = false;
+          }
+          node.removeAttribute('inert');
+        });
+        inertTargets.clear();
+      }
     }
 
-    function createZoomLightbox(scope) {
+    const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
 
-      const lightbox = scope.querySelector('#pdp-lightbox');
-      const stage = scope.querySelector('#pdp-zoomStage');
-      const zoomedImage = scope.querySelector('#pdp-zoomedImage');
-      const zoomToggle = scope.querySelector('#pdp-zoomToggle');
-      const closeBtn = scope.querySelector('#pdp-closeZoom');
-      const prevBtn = scope.querySelector('#pdp-prevZoom');
-      const nextBtn = scope.querySelector('#pdp-nextZoom');
-      const dotsWrap = scope.querySelector('#pdp-zoomDots');
-      const counter = scope.querySelector('#pdp-zoomCounter');
-      const iconZoomIn = zoomToggle ? zoomToggle.innerHTML.trim() : '';
-      const iconZoomReset = '<svg width="15" height="15" viewBox="0 0 20 20" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><path d="M4 10H16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
+    function updateWillChange() {
+      const moving = Math.abs(state.tx) > 0.5 || Math.abs(state.ty) > 0.5 || state.scale > 1.01 || stage.classList.contains('is-sliding') || lightbox.classList.contains('dragging');
+      frame.style.willChange = moving ? 'transform' : '';
+    }
 
-      if (!lightbox || !stage || !zoomedImage || !zoomToggle || !closeBtn || !prevBtn || !nextBtn || !dotsWrap || !counter) {
-        return {
-          setImages() {},
-          openAt() {},
-          setActiveIndex() {}
-        };
+    const apply = () => {
+      const slideX = state.slideOffset || 0;
+      frame.style.transform = `translate3d(-50%, -50%, 0) translate3d(${state.tx + slideX}px, ${state.ty}px, 0) scale(${state.scale})`;
+      updateWillChange();
+      const needsReset = state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1;
+      zoomToggle.innerHTML = needsReset ? iconZoomReset : iconZoomIn;
+      zoomToggle.setAttribute('aria-label', needsReset ? 'Reset zoom' : 'Zoom in');
+    };
+
+    function clampPan() {
+      const contentW = state.baseW * state.scale;
+      const contentH = state.baseH * state.scale;
+      const maxX = Math.max(0, (contentW - state.viewW) / 2);
+      const maxY = Math.max(0, (contentH - state.viewH) / 2);
+      const allowOvershoot = lightbox.classList.contains('dragging') && state.scale > 1;
+      const overshoot = allowOvershoot ? 0.18 : 0;
+      const bufferX = allowOvershoot ? Math.min(state.viewW * overshoot, 140) : 0;
+      const bufferY = allowOvershoot ? Math.min(state.viewH * overshoot, 140) : 0;
+      state.tx = clamp(state.tx, -maxX - bufferX, maxX + bufferX);
+      state.ty = clamp(state.ty, -maxY - bufferY, maxY + bufferY);
+    }
+
+    function schedule() {
+      if (!raf) {
+        raf = requestAnimationFrame(() => {
+          raf = null;
+          clampPan();
+          apply();
+        });
       }
+    }
 
-      const body = document.body;
-      const state = { scale: 1, min: 1, max: 6, tx: 0, ty: 0, slideOffset: 0, baseW: 0, baseH: 0, viewW: 0, viewH: 0 };
-      const viewer = { index: 0, isOpen: false };
-      const pts = new Map();
-      const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-      const SWIPE_HORIZONTAL_THRESHOLD = 48;
-      const SWIPE_VERTICAL_LIMIT = 40;
-      const HYSTERESIS = 8; // px
-      const quickZoomScale = () => Math.min(3, state.max);
-      let images = [];
-      let pinchStart = null;
-      let raf = null;
-      let idleTimer = null;
-      let startDrag = null;
-      let swipeIntent = null;
-      let activeSlide = null;
-      let focusables = [];
-      let firstEl = null;
-      let lastEl = null;
-      let prevActive = null;
+    function measureBase() {
+      const prev = frame.style.transform;
+      frame.style.transform = 'translate3d(-50%, -50%, 0)';
+      const rect = frame.getBoundingClientRect();
+      const stageRect = stage.getBoundingClientRect();
+      frame.style.transform = prev;
+      state.baseW = rect.width || state.baseW;
+      state.baseH = rect.height || state.baseH;
+      state.viewW = stageRect.width;
+      state.viewH = stageRect.height;
+      const reference = (hiImage.dataset.active === 'true' && hiImage.naturalWidth) ? hiImage : baseImage;
+      if (reference && reference.naturalWidth && rect.width) {
+        const limitW = reference.naturalWidth / rect.width;
+        const limitH = reference.naturalHeight / rect.height;
+        state.max = Math.max(1, Math.min(6, limitW, limitH));
+      }
+    }
 
-      const apply = () => {
-        const slideX = state.slideOffset || 0;
-        zoomedImage.style.transform =
-          `translate3d(${state.tx + slideX}px, ${state.ty}px, 0) scale(${state.scale})`;
-        const needsReset = (state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1);
-        if (zoomToggle) {
-          zoomToggle.innerHTML = needsReset ? iconZoomReset : iconZoomIn;
-          zoomToggle.setAttribute('aria-label', needsReset ? 'Reset zoom' : 'Zoom in');
-        }
+    function resetView() {
+      state.scale = 1;
+      state.tx = 0;
+      state.ty = 0;
+      state.slideOffset = 0;
+      schedule();
+    }
+
+    function zoomAt(cx, cy, nextScale) {
+      const target = clamp(nextScale, state.min, state.max);
+      const prevScale = state.scale;
+      if (target === prevScale) return;
+      state.tx = cx - (cx - state.tx) * (target / prevScale);
+      state.ty = cy - (cy - state.ty) * (target / prevScale);
+      state.scale = target;
+      schedule();
+    }
+
+    function showUI() {
+      lightbox.classList.remove('ui-hidden');
+      clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => lightbox.classList.add('ui-hidden'), 2000);
+    }
+
+    function buildDots() {
+      dotsWrap.innerHTML = '';
+      images.forEach((_, i) => {
+        const dot = document.createElement('button');
+        dot.type = 'button';
+        dot.className = 'dot';
+        dot.setAttribute('aria-label', `Go to image ${i + 1}`);
+        dot.addEventListener('click', () => {
+          if (i === viewer.index) return;
+          const dir = i > viewer.index ? 'next' : 'prev';
+          setSlide(i, dir);
+        });
+        dotsWrap.appendChild(dot);
+      });
+    }
+
+    function updateDots() {
+      const nodes = dotsWrap.children;
+      for (let i = 0; i < nodes.length; i += 1) {
+        nodes[i].setAttribute('aria-current', i === viewer.index ? 'true' : 'false');
+      }
+    }
+
+    function prefetchPreview(index) {
+      if (!images.length) return;
+      const item = images[(index + images.length) % images.length];
+      if (!item) return;
+      const img = new Image();
+      img.decoding = 'async';
+      img.src = item.preview;
+    }
+
+    function preloadHi(item) {
+      if (!item || !item.hi || item.hi === item.preview) {
+        return Promise.resolve();
+      }
+      const existing = hiStatus.get(item.hi);
+      if (existing?.status === 'ready') {
+        return Promise.resolve();
+      }
+      if (existing?.promise) {
+        return existing.promise;
+      }
+      const loader = new Image();
+      loader.src = item.hi;
+      let promise;
+      if (loader.decode) {
+        promise = loader.decode();
+      } else if (loader.complete && loader.naturalWidth > 0) {
+        promise = Promise.resolve();
+      } else {
+        promise = new Promise((resolve, reject) => {
+          loader.onload = () => resolve();
+          loader.onerror = reject;
+        });
+      }
+      hiStatus.set(item.hi, { status: 'loading', promise });
+      promise.then(() => {
+        hiStatus.set(item.hi, { status: 'ready' });
+      }).catch(() => {
+        hiStatus.delete(item.hi);
+      });
+      return promise;
+    }
+
+    function commitHiSwap(item) {
+      if (!viewer.isOpen || !item || pendingHi !== item) return;
+      if (!item.hi || item.hi === item.preview) return;
+      if (baseImage.currentSrc === item.hi || baseImage.src === item.hi) return;
+      if (reduceMotion.matches) {
+        baseImage.src = item.hi;
+        return;
+      }
+      const fadeMs = motionDuration(DURATIONS.crossfade);
+      hiImage.src = item.hi;
+      hiImage.dataset.active = 'true';
+      frame.classList.add('is-fading');
+      window.setTimeout(() => {
+        baseImage.src = item.hi;
+        frame.classList.remove('is-fading');
+        hiImage.dataset.active = 'false';
+        hiImage.removeAttribute('src');
+      }, fadeMs + 40);
+    }
+
+    function startHiSwap(item) {
+      pendingHi = item;
+      if (!item || !item.hi) return;
+      preloadHi(item)
+        .then(() => {
+          if (pendingHi === item) {
+            commitHiSwap(item);
+          }
+        })
+        .catch(() => {
+          if (pendingHi === item) {
+            showToast('High-resolution image failed to load. Showing standard detail.');
+          }
+        });
+    }
+
+    function createSlidePrep(dir) {
+      const slideClass = dir === 'next' ? 'slide-next' : 'slide-prev';
+      stage.classList.remove('slide-next', 'slide-prev');
+      stage.querySelectorAll('.pdp-zoom-clone').forEach((node) => node.remove());
+      const clone = frame.cloneNode(true);
+      clone.removeAttribute('id');
+      clone.querySelectorAll('[id]').forEach((node) => node.removeAttribute('id'));
+      clone.classList.add('pdp-zoom-clone');
+      clone.querySelector('[data-zoom-bitmap="hi"]')?.remove();
+      const cloneBitmap = clone.querySelector('[data-zoom-bitmap="base"]');
+      if (cloneBitmap) {
+        cloneBitmap.src = baseImage.currentSrc || baseImage.src;
+        cloneBitmap.alt = '';
+      }
+      stage.appendChild(clone);
+      frame.style.visibility = 'hidden';
+      let disposed = false;
+      let finished = false;
+      let fallbackTimer = null;
+
+      const applyClone = (deltaX = 0) => {
+        clone.style.transform = `translate3d(-50%, -50%, 0) translate3d(${state.tx + deltaX}px, ${state.ty}px, 0) scale(${state.scale})`;
       };
+      applyClone();
 
-      const clampPan = () => {
-        const contentW = state.baseW * state.scale;
-        const contentH = state.baseH * state.scale;
-        const maxX = Math.max(0, (contentW - state.viewW) / 2);
-        const maxY = Math.max(0, (contentH - state.viewH) / 2);
-        const allowOvershoot = lightbox.classList.contains('dragging') && state.scale > 1;
-        const overshootFactor = allowOvershoot ? 0.18 : 0;
-        const bufferX = allowOvershoot ? Math.min(state.viewW * overshootFactor, 140) : 0;
-        const bufferY = allowOvershoot ? Math.min(state.viewH * overshootFactor, 140) : 0;
-        state.tx = clamp(state.tx, -maxX - bufferX, maxX + bufferX);
-        state.ty = clamp(state.ty, -maxY - bufferY, maxY + bufferY);
-      };
-
-      const schedule = () => {
-        if (!raf) {
-          raf = requestAnimationFrame(() => {
-            raf = null;
+      return {
+        start(onComplete) {
+          if (disposed) {
+            onComplete?.();
+            return () => {};
+          }
+          const rect = stage.getBoundingClientRect();
+          const distance = Math.max(rect.width || state.viewW || window.innerWidth || 1, 1);
+          const offset = dir === 'next' ? distance : -distance;
+          const slideMs = motionDuration(DURATIONS.slide);
+          stage.classList.add('is-sliding', slideClass);
+          stage.style.setProperty('--pdp-zoom-transform-speed', `${slideMs}ms`);
+          state.slideOffset = offset;
+          clampPan();
+          apply();
+          void frame.offsetWidth;
+          requestAnimationFrame(() => {
+            state.slideOffset = 0;
             clampPan();
             apply();
           });
-        }
-      };
 
-      function measureBase() {
-        const prev = zoomedImage.style.transform;
-        zoomedImage.style.transform = 'translate3d(0,0,0) scale(1)';
-        const rect = zoomedImage.getBoundingClientRect();
-        const stageRect = stage.getBoundingClientRect();
-        state.baseW = rect.width;
-        state.baseH = rect.height;
-        state.viewW = stageRect.width;
-        state.viewH = stageRect.height;
-        zoomedImage.style.transform = prev;
-        if (zoomedImage.naturalWidth && state.baseW) {
-          const limitW = zoomedImage.naturalWidth / state.baseW;
-          const limitH = zoomedImage.naturalHeight / state.baseH;
-          state.max = Math.max(1, Math.min(6, limitW, limitH));
-        }
-      }
-
-      const showUI = () => {
-        lightbox.classList.remove('ui-hidden');
-        clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => lightbox.classList.add('ui-hidden'), 1600);
-      };
-
-      function buildDots() {
-        dotsWrap.innerHTML = '';
-        images.forEach((_, i) => {
-          const dot = document.createElement('button');
-          dot.type = 'button';
-          dot.className = 'dot';
-          dot.setAttribute('aria-label', `Go to image ${i + 1}`);
-          dot.addEventListener('click', () => {
-            const dir = i === viewer.index ? null : (i > viewer.index ? 'next' : 'prev');
-            setSlide(i, dir);
+          clone.style.transition = `transform ${slideMs}ms ${cubicBezier}`;
+          void clone.offsetWidth;
+          requestAnimationFrame(() => {
+            applyClone(-offset);
           });
-          dotsWrap.appendChild(dot);
-        });
-      }
 
-      function updateDots() {
-        const children = dotsWrap.children;
-        for (let i = 0; i < children.length; i += 1) {
-          children[i].setAttribute('aria-current', i === viewer.index ? 'true' : 'false');
+          const finish = () => {
+            if (finished) return;
+            finished = true;
+            clearTimeout(fallbackTimer);
+            clone.remove();
+            stage.classList.remove('is-sliding', slideClass);
+            stage.style.removeProperty('--pdp-zoom-transform-speed');
+            frame.style.visibility = '';
+            onComplete?.();
+          };
+
+          const handleEnd = (event) => {
+            if (event.target === clone && event.propertyName === 'transform') {
+              clone.removeEventListener('transitionend', handleEnd);
+              finish();
+            }
+          };
+
+          clone.addEventListener('transitionend', handleEnd);
+          fallbackTimer = window.setTimeout(finish, Math.max(420, slideMs + 60));
+
+          return () => {
+            clone.removeEventListener('transitionend', handleEnd);
+            clearTimeout(fallbackTimer);
+            clone.remove();
+            stage.classList.remove('is-sliding', slideClass);
+            stage.style.removeProperty('--pdp-zoom-transform-speed');
+            frame.style.visibility = '';
+          };
+        },
+        cleanup(force = false) {
+          if (disposed) return;
+          disposed = true;
+          clearTimeout(fallbackTimer);
+          if (force) {
+            clone.remove();
+            stage.classList.remove('is-sliding', slideClass);
+            stage.style.removeProperty('--pdp-zoom-transform-speed');
+            frame.style.visibility = '';
+          }
+        }
+      };
+    }
+
+    function setSlide(index, direction, options = {}) {
+      if (!images.length) {
+        return;
+      }
+      const { immediate = false, deferHiSwap = false, initialSrc = null } = options;
+      const previousIndex = viewer.index;
+      const rawIndex = typeof index === 'number' ? index : viewer.index;
+      let resolvedDirection = typeof direction === 'string' ? direction : null;
+      const normalizedIndex = (rawIndex + images.length) % images.length;
+
+      if (!resolvedDirection && viewer.isOpen && images.length > 1 && normalizedIndex !== previousIndex) {
+        if (rawIndex > previousIndex || (previousIndex === images.length - 1 && normalizedIndex === 0)) {
+          resolvedDirection = 'next';
+        } else if (rawIndex < previousIndex || (previousIndex === 0 && normalizedIndex === images.length - 1)) {
+          resolvedDirection = 'prev';
         }
       }
 
-      function resetView() {
+      if (images.length <= 1) {
+        resolvedDirection = null;
+      }
+
+      viewer.index = normalizedIndex;
+      const item = images[viewer.index];
+      counter.textContent = `${viewer.index + 1} / ${images.length}`;
+      updateDots();
+
+      prefetchPreview(viewer.index + 1);
+      prefetchPreview(viewer.index - 1);
+      preloadHi(images[(viewer.index + 1 + images.length) % images.length]);
+      preloadHi(images[(viewer.index - 1 + images.length) % images.length]);
+
+      if (activeSlide) {
+        activeSlide.cleanup(true);
+        activeSlide = null;
+      }
+
+      const previewSrc = initialSrc || item.preview;
+      baseImage.alt = item.alt || '';
+      frame.classList.remove('is-fading');
+      hiImage.dataset.active = 'false';
+      hiImage.removeAttribute('src');
+
+      if (resolvedDirection) {
         state.scale = 1;
         state.tx = 0;
         state.ty = 0;
         state.slideOffset = 0;
-        schedule();
       }
 
-      function zoomAt(cx, cy, nextScale) {
-        const target = clamp(nextScale, state.min, state.max);
-        const prevScale = state.scale;
-        if (target === prevScale) return;
-        state.tx = cx - (cx - state.tx) * (target / prevScale);
-        state.ty = cy - (cy - state.ty) * (target / prevScale);
-        state.scale = target;
-        schedule();
+      let slidePrep = null;
+      if (resolvedDirection && !immediate) {
+        slidePrep = createSlidePrep(resolvedDirection);
+        activeSlide = slidePrep;
+      } else if (!immediate) {
+        frame.classList.add('is-swapping');
       }
 
-      function setSlide(index, direction) {
-        if (!images.length) {
-          return;
-        }
+      let animationDone = immediate || !slidePrep;
+      let previewReady = false;
 
-        const previousIndex = viewer.index;
-        const rawIndex = typeof index === 'number' ? index : viewer.index;
-        let resolvedDirection = typeof direction === 'string' ? direction : null;
-        const normalizedIndex = (rawIndex + images.length) % images.length;
-
-        if (!resolvedDirection && viewer.isOpen && images.length > 1 && normalizedIndex !== previousIndex) {
-          if (rawIndex > previousIndex || (previousIndex === images.length - 1 && rawIndex >= previousIndex && normalizedIndex === 0)) {
-            resolvedDirection = 'next';
-          } else if (rawIndex < previousIndex || (previousIndex === 0 && rawIndex <= previousIndex && normalizedIndex === images.length - 1)) {
-            resolvedDirection = 'prev';
-          }
-        }
-
-        if (images.length <= 1) {
-          resolvedDirection = null;
-        }
-
-        viewer.index = normalizedIndex;
-        const item = images[viewer.index];
-        zoomedImage.alt = item.alt || '';
-        zoomedImage.removeAttribute('srcset');
-        zoomedImage.removeAttribute('sizes');
-        counter.textContent = `${viewer.index + 1} / ${images.length}`;
-        updateDots();
-
-        [viewer.index - 1, viewer.index + 1].forEach((ii) => {
-          const neighbor = images[(ii + images.length) % images.length];
-          if (neighbor) {
-            const preload = new Image();
-            preload.src = neighbor.src;
-          }
-        });
-
-        const createSlidePrep = (dir) => {
-          const slideClass = dir === 'next' ? 'slide-next' : 'slide-prev';
-          stage.classList.remove('slide-next', 'slide-prev');
-          stage.querySelectorAll('.slide-clone').forEach((node) => node.remove());
-          const clone = zoomedImage.cloneNode(true);
-          clone.removeAttribute('id');
-          clone.setAttribute('aria-hidden', 'true');
-          clone.classList.add('slide-clone');
-          clone.src = zoomedImage.currentSrc || zoomedImage.src;
-          const applyClone = (deltaX = 0) => {
-            clone.style.transform =
-              `translate3d(-50%, -50%, 0) translate3d(${state.tx + deltaX}px, ${state.ty}px, 0) scale(${state.scale})`;
-          };
-          applyClone();
-          stage.appendChild(clone);
-          zoomedImage.style.visibility = 'hidden';
-          let disposed = false;
-          let finished = false;
-          let cancelClone = null;
-          let fallbackTimer = null;
-
-          const clearStageState = () => {
-            stage.classList.remove('is-sliding', 'slide-next', 'slide-prev');
-            zoomedImage.style.visibility = '';
-            state.slideOffset = 0;
-          };
-
-          return {
-            start(onComplete) {
-              if (disposed) {
-                onComplete?.();
-                return () => {};
-              }
-              const rect = stage.getBoundingClientRect();
-              const distance = Math.max(rect.width || state.viewW || window.innerWidth || 1, 1);
-              const offset = dir === 'next' ? distance : -distance;
-              zoomedImage.style.transition = 'none';
-              state.slideOffset = offset;
-              clampPan();
-              apply();
-              void zoomedImage.offsetWidth;
-              zoomedImage.style.transition = '';
-              zoomedImage.style.visibility = '';
-              stage.classList.add('is-sliding', slideClass);
-              requestAnimationFrame(() => {
-                state.slideOffset = 0;
-                clampPan();
-                apply();
-              });
-
-              clone.style.transition = 'none';
-              applyClone();
-              void clone.offsetWidth;
-              clone.style.transition = '';
-              requestAnimationFrame(() => {
-                applyClone(-offset);
-              });
-
-              const finish = () => {
-                if (finished) return;
-                finished = true;
-                clearTimeout(fallbackTimer);
-                clone.remove();
-                onComplete?.();
-              };
-              const handleCloneEnd = () => {
-                clone.removeEventListener('transitionend', handleCloneEnd);
-                finish();
-              };
-              clone.addEventListener('transitionend', handleCloneEnd);
-              fallbackTimer = setTimeout(finish, 420);
-
-              cancelClone = () => {
-                clone.removeEventListener('transitionend', handleCloneEnd);
-                clearTimeout(fallbackTimer);
-                clone.remove();
-                finished = true;
-              };
-
-              return cancelClone;
-            },
-            cleanup(force = false) {
-              if (disposed) return;
-              disposed = true;
-              clearTimeout(fallbackTimer);
-              if (force && !finished) {
-                cancelClone?.();
-              }
-              clone.remove();
-              clearStageState();
-            }
-          };
-        };
-
-        if (activeSlide) {
-          activeSlide.cleanup(true);
+      const finalizeSwap = () => {
+        if (slidePrep && activeSlide === slidePrep) {
+          activeSlide.cleanup();
           activeSlide = null;
         }
-
-        let slidePrep = null;
-        if (resolvedDirection) {
-          state.scale = 1;
-          state.tx = 0;
-          state.ty = 0;
-          state.slideOffset = 0;
-          clampPan();
-          apply();
-          slidePrep = createSlidePrep(resolvedDirection);
-          activeSlide = slidePrep;
+        frame.classList.remove('is-swapping');
+        frame.style.visibility = '';
+        measureBase();
+        resetView();
+        if (!deferHiSwap) {
+          startHiSwap(item);
         } else {
-          zoomedImage.classList.add('is-swapping');
-        }
-
-        let animationDone = !resolvedDirection;
-        let imageReady = false;
-
-        const finalizeSwap = () => {
-          if (slidePrep && activeSlide === slidePrep) {
-            slidePrep.cleanup();
-            activeSlide = null;
-          }
-          measureBase();
-          resetView();
-          requestAnimationFrame(() => {
-            zoomedImage.classList.remove('is-swapping');
-          });
-        };
-
-        const maybeFinish = () => {
-          if (animationDone && imageReady) {
-            finalizeSwap();
-          }
-        };
-
-        const handleLoad = () => {
-          zoomedImage.removeEventListener('error', handleError);
-          imageReady = true;
-          if (slidePrep) {
-            slidePrep.start(() => {
-              animationDone = true;
-              maybeFinish();
-            });
-          } else {
-            animationDone = true;
-            maybeFinish();
-          }
-        };
-
-        const handleError = () => {
-          zoomedImage.removeEventListener('load', handleLoad);
-          slidePrep?.cleanup(true);
-          if (activeSlide === slidePrep) {
-            activeSlide = null;
-          }
-          zoomedImage.classList.remove('is-swapping');
-          zoomedImage.style.visibility = '';
-          const fallback = images[previousIndex];
-          if (fallback) {
-            viewer.index = previousIndex;
-            counter.textContent = `${viewer.index + 1} / ${images.length}`;
-            updateDots();
-            zoomedImage.alt = fallback.alt || '';
-            zoomedImage.src = fallback.src;
-            measureBase();
-            resetView();
-          }
-        };
-
-        zoomedImage.onload = null;
-        zoomedImage.onerror = null;
-        zoomedImage.addEventListener('load', handleLoad, { once: true });
-        zoomedImage.addEventListener('error', handleError, { once: true });
-        zoomedImage.src = item.src;
-        if (zoomedImage.complete && zoomedImage.naturalWidth > 0) {
-          handleLoad();
-        }
-        showUI();
-      }
-
-      function openLightbox(index, opener) {
-        if (!images.length) {
-          return;
-        }
-        viewer.isOpen = true;
-        lightbox.classList.add('open');
-        lightbox.setAttribute('aria-hidden', 'false');
-        body.dataset.prevOverflow = body.style.overflow || '';
-        body.style.overflow = 'hidden';
-        prevActive = opener || document.activeElement;
-
-        requestAnimationFrame(() => {
-          measureBase();
-          setSlide(index);
-          trapFocus();
-          zoomToggle?.focus();
-        });
-      }
-
-      function closeLightbox() {
-        viewer.isOpen = false;
-        lightbox.classList.remove('open', 'ui-hidden', 'dragging');
-        lightbox.setAttribute('aria-hidden', 'true');
-        body.style.overflow = body.dataset.prevOverflow || '';
-        pts.clear();
-        pinchStart = null;
-        startDrag = null;
-        clearTimeout(idleTimer);
-        releaseFocus();
-      }
-
-      closeBtn.addEventListener('click', closeLightbox);
-      zoomToggle.addEventListener('click', () => {
-        if (state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1) {
-          resetView();
-        } else {
-          zoomAt(0, 0, quickZoomScale());
-        }
-      });
-      prevBtn.addEventListener('click', () => setSlide(viewer.index - 1, 'prev'));
-      nextBtn.addEventListener('click', () => setSlide(viewer.index + 1, 'next'));
-
-      lightbox.addEventListener('mousemove', showUI);
-      lightbox.addEventListener('click', (event) => {
-        if (event.target === lightbox) closeLightbox();
-      });
-
-      window.addEventListener('keydown', (event) => {
-        if (!viewer.isOpen) return;
-        if (event.key === 'Escape') {
-          event.preventDefault();
-          closeLightbox();
-        } else if (event.key === 'ArrowRight') {
-          event.preventDefault();
-          setSlide(viewer.index + 1, 'next');
-        } else if (event.key === 'ArrowLeft') {
-          event.preventDefault();
-          setSlide(viewer.index - 1, 'prev');
-        } else if (event.key === '+' || (event.key === '=' && (event.ctrlKey || event.metaKey))) {
-          event.preventDefault();
-          zoomAt(0, 0, state.scale * 1.25);
-        } else if (event.key === '-' || (event.key === '_' && (event.ctrlKey || event.metaKey))) {
-          event.preventDefault();
-          zoomAt(0, 0, state.scale / 1.25);
-        }
-      });
-
-      stage.addEventListener('dblclick', (event) => {
-        const rect = stage.getBoundingClientRect();
-        const cx = event.clientX - (rect.left + rect.width / 2);
-        const cy = event.clientY - (rect.top + rect.height / 2);
-        const targetScale = state.scale > 1 ? 1 : quickZoomScale();
-        zoomAt(cx, cy, targetScale);
-      });
-
-      stage.addEventListener('pointerdown', (event) => {
-        if (!viewer.isOpen) return;
-        stage.setPointerCapture(event.pointerId);
-        pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
-        if (pts.size === 1) {
-          startDrag = { x: event.clientX, y: event.clientY, atScale: state.scale };
-          swipeIntent = null;
-        }
-        if (pts.size === 2) {
-          startDrag = null;
-          swipeIntent = null;
-          const [a, b] = [...pts.values()];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.hypot(dx, dy);
-          const rect = stage.getBoundingClientRect();
-          const cx = (a.x + b.x) / 2 - (rect.left + rect.width / 2);
-          const cy = (a.y + b.y) / 2 - (rect.top + rect.height / 2);
-          pinchStart = { dist, scale: state.scale, cx, cy };
-        }
-        lightbox.classList.add('dragging');
-        showUI();
-      });
-
-      stage.addEventListener('pointermove', (event) => {
-        if (!pts.has(event.pointerId)) return;
-        const previous = pts.get(event.pointerId);
-        const current = { x: event.clientX, y: event.clientY };
-        pts.set(event.pointerId, current);
-
-        if (pts.size === 1 && startDrag) {
-          const zoomedNow = state.scale > 1.001;
-          const startedZoomed = startDrag.atScale > 1.001;
-          if (zoomedNow || startedZoomed) {
-            state.tx += current.x - previous.x;
-            state.ty += current.y - previous.y;
-            schedule();
-          } else {
-            const dx = current.x - startDrag.x;
-            const dy = current.y - startDrag.y;
-            if (
-              Math.abs(dy) <= SWIPE_VERTICAL_LIMIT &&
-              Math.abs(dx) >= SWIPE_HORIZONTAL_THRESHOLD + HYSTERESIS
-            ) {
-              swipeIntent = dx < 0 ? 'next' : 'prev';
-            } else if (
-              Math.abs(dx) < SWIPE_HORIZONTAL_THRESHOLD ||
-              Math.abs(dy) > SWIPE_VERTICAL_LIMIT
-            ) {
-              swipeIntent = null;
-            }
-          }
-        } else if (pts.size === 2 && pinchStart) {
-          const [a, b] = [...pts.values()];
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.hypot(dx, dy);
-          const nextScale = clamp(pinchStart.scale * (dist / pinchStart.dist), state.min, state.max);
-          zoomAt(pinchStart.cx, pinchStart.cy, nextScale);
-        }
-      }, { passive: false });
-
-      const endPointer = (event) => {
-        if (!pts.has(event.pointerId)) return;
-        const dragSnapshot = startDrag;
-        const intent = swipeIntent;
-        pts.delete(event.pointerId);
-        if (pts.size < 2) pinchStart = null;
-
-        if (!pts.size) {
-          swipeIntent = null;
-          if (dragSnapshot && dragSnapshot.atScale === 1 && state.scale === 1 && intent) {
-            setSlide(viewer.index + (intent === 'next' ? 1 : -1), intent);
-          }
-          lightbox.classList.remove('dragging');
-          startDrag = null;
-          schedule();
-        } else if (pts.size === 1) {
-          const [, point] = pts.entries().next().value;
-          startDrag = { x: point.x, y: point.y, atScale: state.scale };
-          swipeIntent = null;
-        } else {
-          startDrag = null;
-          swipeIntent = null;
+          pendingHi = item;
         }
       };
-      stage.addEventListener('pointerup', endPointer);
-      stage.addEventListener('pointercancel', endPointer);
-      stage.addEventListener('pointerleave', endPointer);
 
-      stage.addEventListener('wheel', (event) => {
-        if (!viewer.isOpen) return;
-        event.preventDefault();
-        const factor = Math.exp(-event.deltaY * 0.0015);
-        const rect = stage.getBoundingClientRect();
-        const cx = event.clientX - (rect.left + rect.width / 2);
-        const cy = event.clientY - (rect.top + rect.height / 2);
-        zoomAt(cx, cy, state.scale * factor);
-        showUI();
-      }, { passive: false });
-
-      new ResizeObserver(() => {
-        if (viewer.isOpen) {
-          measureBase();
-          schedule();
+      const maybeFinish = () => {
+        if (animationDone && previewReady) {
+          finalizeSwap();
         }
-      }).observe(stage);
+      };
 
-      function trapFocus() {
-        focusables = [...lightbox.querySelectorAll('button,[href],[tabindex]:not([tabindex="-1"])')];
-        firstEl = focusables[0] || null;
-        lastEl = focusables[focusables.length - 1] || null;
-        lightbox.addEventListener('keydown', focusTrapHandler);
+      const handleLoad = () => {
+        baseImage.removeEventListener('error', handleError);
+        previewReady = true;
+        if (slidePrep) {
+          slidePrep.start(() => {
+            animationDone = true;
+            maybeFinish();
+          });
+        } else {
+          animationDone = true;
+          maybeFinish();
+        }
+      };
+
+      const handleError = () => {
+        baseImage.removeEventListener('load', handleLoad);
+        frame.classList.remove('is-swapping');
+        slidePrep?.cleanup(true);
+        if (activeSlide === slidePrep) {
+          activeSlide = null;
+        }
+        const fallback = images[previousIndex];
+        if (fallback) {
+          viewer.index = previousIndex;
+          counter.textContent = `${viewer.index + 1} / ${images.length}`;
+          updateDots();
+          baseImage.src = fallback.preview;
+          baseImage.alt = fallback.alt || '';
+          measureBase();
+          resetView();
+        }
+        showToast('We kept the standard image while loading the zoom view.');
+      };
+
+      baseImage.addEventListener('load', handleLoad, { once: true });
+      baseImage.addEventListener('error', handleError, { once: true });
+
+      if (baseImage.src !== previewSrc) {
+        baseImage.src = previewSrc;
       }
 
+      if (baseImage.complete && baseImage.naturalWidth > 0) {
+        baseImage.removeEventListener('load', handleLoad);
+        handleLoad();
+      }
+
+      if (immediate && previewReady) {
+        finalizeSwap();
+      }
+    }
+
+    function trapFocus() {
+      const focusables = [...lightbox.querySelectorAll('button,[href],[tabindex]:not([tabindex="-1"])')];
+      const firstEl = focusables[0] || null;
+      const lastEl = focusables[focusables.length - 1] || null;
       function focusTrapHandler(event) {
         if (event.key !== 'Tab' || focusables.length === 0) return;
         if (event.shiftKey && document.activeElement === firstEl) {
@@ -1390,45 +1367,328 @@
           firstEl?.focus();
         }
       }
-
-      function releaseFocus() {
+      lightbox.addEventListener('keydown', focusTrapHandler);
+      return () => {
         lightbox.removeEventListener('keydown', focusTrapHandler);
-        prevActive?.focus?.();
-      }
+      };
+    }
 
+    let releaseFocus = () => {};
+
+    function createGhost(rect, src, alt) {
+      const ghost = document.createElement('img');
+      ghost.src = src;
+      ghost.alt = alt || '';
+      ghost.className = 'pdp-zoom-ghost';
+      ghost.style.position = 'fixed';
+      ghost.style.top = '0';
+      ghost.style.left = '0';
+      ghost.style.margin = '0';
+      ghost.style.transformOrigin = '0 0';
+      ghost.style.pointerEvents = 'none';
+      ghost.style.zIndex = '1000';
+      const baseWidth = Math.max(rect.width, 1);
+      const baseHeight = Math.max(rect.height, 1);
+      const setRect = (r) => {
+        ghost.style.width = `${Math.max(r.width, 1)}px`;
+        ghost.style.height = `${Math.max(r.height, 1)}px`;
+        ghost.style.transform = `translate3d(${r.left}px, ${r.top}px, 0)`;
+      };
+      setRect(rect);
       return {
-        setImages(list) {
-          images = (list || []).filter((item) => item && item.src);
-          viewer.index = 0;
-          buildDots();
-          if (!images.length) {
-            zoomedImage.removeAttribute('src');
-            counter.textContent = '';
-            return;
-          }
-          updateDots();
-          counter.textContent = `${viewer.index + 1} / ${images.length}`;
-          if (viewer.isOpen) {
-            setSlide(viewer.index);
-          }
+        element: ghost,
+        animateTo(targetRect, duration, easing) {
+          const dx = targetRect.left - rect.left;
+          const dy = targetRect.top - rect.top;
+          const sx = Math.max(targetRect.width, 1) / baseWidth;
+          const sy = Math.max(targetRect.height, 1) / baseHeight;
+          return ghost.animate(
+            [
+              { transform: `translate3d(${rect.left}px, ${rect.top}px, 0) scale(1, 1)` },
+              { transform: `translate3d(${rect.left + dx}px, ${rect.top + dy}px, 0) scale(${sx}, ${sy})` }
+            ],
+            { duration, easing, fill: 'forwards' }
+          ).finished.catch(() => {});
         },
-        openAt(index, opener) {
-          const targetIndex = typeof index === 'number' ? index : viewer.index;
-          openLightbox(targetIndex, opener);
-        },
-        setActiveIndex(index) {
-          if (!images.length) {
-            viewer.index = 0;
-            counter.textContent = '';
-            return;
-          }
-          viewer.index = (index + images.length) % images.length;
-          updateDots();
-          counter.textContent = `${viewer.index + 1} / ${images.length}`;
+        dispose() {
+          ghost.remove();
         }
       };
+    }
+
+    function openLightbox(index, opener) {
+      if (!images.length) {
+        return;
+      }
+      const normalizedIndex = (index + images.length) % images.length;
+      const item = images[normalizedIndex];
+      viewer.isOpen = true;
+      openerEl = opener || null;
+      lightbox.classList.add('open', 'opening');
+      lightbox.setAttribute('aria-hidden', 'false');
+      body.dataset.prevOverflow = body.style.overflow || '';
+      body.style.overflow = 'hidden';
+      prevActive = opener || document.activeElement;
+      toggleBackgroundInert(true);
+      setSlide(normalizedIndex, null, { immediate: true, deferHiSwap: true, initialSrc: (opener && (opener.currentSrc || opener.src)) || item.preview });
+
+      const openerRect = opener ? opener.getBoundingClientRect() : null;
+      const stageRect = frame.getBoundingClientRect();
+      frame.style.visibility = openerRect && !reduceMotion.matches ? 'hidden' : '';
+
+      const finalizeOpen = () => {
+        frame.style.visibility = '';
+        lightbox.classList.remove('opening');
+        releaseFocus = trapFocus();
+        measureBase();
+        resetView();
+        setSlide(normalizedIndex, null, { deferHiSwap: false });
+        zoomToggle.focus();
+        showUI();
+      };
+
+      if (!reduceMotion.matches && openerRect && stageRect.width && stageRect.height) {
+        const ghost = createGhost(openerRect, (opener && (opener.currentSrc || opener.src)) || baseImage.src, opener?.alt || item.alt);
+        document.body.appendChild(ghost.element);
+        requestAnimationFrame(() => {
+          ghost.animateTo(stageRect, motionDuration(DURATIONS.open), cubicBezier).then(() => {
+            ghost.dispose();
+            finalizeOpen();
+          });
+        });
+      } else {
+        finalizeOpen();
+      }
+    }
+
+    function closeLightbox() {
+      if (!viewer.isOpen || closing) {
+        return;
+      }
+      closing = true;
+      const finishClose = () => {
+        viewer.isOpen = false;
+        closing = false;
+        lightbox.classList.remove('open', 'ui-hidden', 'dragging', 'opening');
+        lightbox.setAttribute('aria-hidden', 'true');
+        body.style.overflow = body.dataset.prevOverflow || '';
+        toggleBackgroundInert(false);
+        pts.clear();
+        pinchStart = null;
+        startDrag = null;
+        swipeIntent = null;
+        clearTimeout(idleTimer);
+        releaseFocus();
+        releaseFocus = () => {};
+        prevActive?.focus?.();
+        openerEl = null;
+        pendingHi = null;
+      };
+
+      const openerRect = openerEl ? openerEl.getBoundingClientRect() : null;
+      const stageRect = frame.getBoundingClientRect();
+
+      if (!reduceMotion.matches && openerRect && stageRect.width && stageRect.height) {
+        const ghost = createGhost(stageRect, baseImage.currentSrc || baseImage.src, baseImage.alt);
+        frame.style.visibility = 'hidden';
+        document.body.appendChild(ghost.element);
+        requestAnimationFrame(() => {
+          ghost.animateTo(openerRect, motionDuration(DURATIONS.close), cubicBezier).then(() => {
+            ghost.dispose();
+            frame.style.visibility = '';
+            finishClose();
+          });
+        });
+      } else {
+        finishClose();
+      }
+    }
+
+    closeBtn.addEventListener('click', closeLightbox);
+    zoomToggle.addEventListener('click', () => {
+      if (state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1) {
+        resetView();
+      } else {
+        zoomAt(0, 0, Math.min(3, state.max));
+      }
+    });
+    prevBtn.addEventListener('click', () => setSlide(viewer.index - 1, 'prev'));
+    nextBtn.addEventListener('click', () => setSlide(viewer.index + 1, 'next'));
+
+    lightbox.addEventListener('mousemove', showUI);
+    lightbox.addEventListener('click', (event) => {
+      if (event.target === lightbox) {
+        closeLightbox();
+      }
+    });
+
+    window.addEventListener('keydown', (event) => {
+      if (!viewer.isOpen) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeLightbox();
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        setSlide(viewer.index + 1, 'next');
+      } else if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        setSlide(viewer.index - 1, 'prev');
+      } else if (event.key === '+' || (event.key === '=' && (event.ctrlKey || event.metaKey))) {
+        event.preventDefault();
+        zoomAt(0, 0, state.scale * 1.25);
+      } else if (event.key === '-' || (event.key === '_' && (event.ctrlKey || event.metaKey))) {
+        event.preventDefault();
+        zoomAt(0, 0, state.scale / 1.25);
+      }
+    });
+
+    stage.addEventListener('dblclick', (event) => {
+      const rect = stage.getBoundingClientRect();
+      const cx = event.clientX - (rect.left + rect.width / 2);
+      const cy = event.clientY - (rect.top + rect.height / 2);
+      const targetScale = state.scale > 1 ? 1 : Math.min(3, state.max);
+      zoomAt(cx, cy, targetScale);
+    });
+
+    stage.addEventListener('pointerdown', (event) => {
+      if (!viewer.isOpen) return;
+      stage.setPointerCapture(event.pointerId);
+      pts.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (pts.size === 1) {
+        startDrag = { x: event.clientX, y: event.clientY, atScale: state.scale };
+        swipeIntent = null;
+      }
+      if (pts.size === 2) {
+        startDrag = null;
+        swipeIntent = null;
+        const [a, b] = [...pts.values()];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const rect = stage.getBoundingClientRect();
+        const cx = (a.x + b.x) / 2 - (rect.left + rect.width / 2);
+        const cy = (a.y + b.y) / 2 - (rect.top + rect.height / 2);
+        pinchStart = { dist, scale: state.scale, cx, cy };
+      }
+      lightbox.classList.add('dragging');
+      showUI();
+    });
+
+    stage.addEventListener('pointermove', (event) => {
+      if (!pts.has(event.pointerId)) return;
+      const previous = pts.get(event.pointerId);
+      const current = { x: event.clientX, y: event.clientY };
+      pts.set(event.pointerId, current);
+
+      if (pts.size === 1 && startDrag) {
+        const zoomedNow = state.scale > 1.001;
+        const startedZoomed = startDrag.atScale > 1.001;
+        if (zoomedNow || startedZoomed) {
+          state.tx += current.x - previous.x;
+          state.ty += current.y - previous.y;
+          schedule();
+        } else {
+          const dx = current.x - startDrag.x;
+          const dy = current.y - startDrag.y;
+          if (Math.abs(dy) <= SWIPE_VERTICAL_LIMIT && Math.abs(dx) >= SWIPE_HORIZONTAL_THRESHOLD + HYSTERESIS) {
+            swipeIntent = dx < 0 ? 'next' : 'prev';
+          } else if (Math.abs(dx) < SWIPE_HORIZONTAL_THRESHOLD || Math.abs(dy) > SWIPE_VERTICAL_LIMIT) {
+            swipeIntent = null;
+          }
+        }
+      } else if (pts.size === 2 && pinchStart) {
+        const [a, b] = [...pts.values()];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.hypot(dx, dy);
+        const nextScale = clamp(pinchStart.scale * (dist / pinchStart.dist), state.min, state.max);
+        zoomAt(pinchStart.cx, pinchStart.cy, nextScale);
+      }
+    }, { passive: false });
+
+    const endPointer = (event) => {
+      if (!pts.has(event.pointerId)) return;
+      const dragSnapshot = startDrag;
+      const intent = swipeIntent;
+      pts.delete(event.pointerId);
+      if (pts.size < 2) pinchStart = null;
+
+      if (!pts.size) {
+        swipeIntent = null;
+        if (dragSnapshot && dragSnapshot.atScale === 1 && state.scale === 1 && intent) {
+          setSlide(viewer.index + (intent === 'next' ? 1 : -1), intent);
+        }
+        lightbox.classList.remove('dragging');
+        startDrag = null;
+        schedule();
+      } else if (pts.size === 1) {
+        const [, point] = pts.entries().next().value;
+        startDrag = { x: point.x, y: point.y, atScale: state.scale };
+        swipeIntent = null;
+      } else {
+        startDrag = null;
+        swipeIntent = null;
+      }
+    };
+
+    stage.addEventListener('pointerup', endPointer);
+    stage.addEventListener('pointercancel', endPointer);
+    stage.addEventListener('pointerleave', endPointer);
+
+    stage.addEventListener('wheel', (event) => {
+      if (!viewer.isOpen) return;
+      event.preventDefault();
+      const factor = Math.exp(-event.deltaY * 0.0015);
+      const rect = stage.getBoundingClientRect();
+      const cx = event.clientX - (rect.left + rect.width / 2);
+      const cy = event.clientY - (rect.top + rect.height / 2);
+      zoomAt(cx, cy, state.scale * factor);
+      showUI();
+    }, { passive: false });
+
+    new ResizeObserver(() => {
+      if (viewer.isOpen) {
+        measureBase();
+        schedule();
+      }
+    }).observe(stage);
+
+    return {
+      setImages(list) {
+        images = (list || []).filter((item) => item && item.preview);
+        viewer.index = 0;
+        buildDots();
+        if (!images.length) {
+          baseImage.removeAttribute('src');
+          counter.textContent = '';
+          return;
+        }
+        updateDots();
+        counter.textContent = `${viewer.index + 1} / ${images.length}`;
+        if (viewer.isOpen) {
+          setSlide(viewer.index, null, { immediate: true, deferHiSwap: true });
+        }
+      },
+      openAt(index, opener) {
+        const targetIndex = typeof index === 'number' ? index : viewer.index;
+        openLightbox(targetIndex, opener);
+      },
+      setActiveIndex(index) {
+        if (!images.length) {
+          viewer.index = 0;
+          counter.textContent = '';
+          return;
+        }
+        viewer.index = (index + images.length) % images.length;
+        updateDots();
+        counter.textContent = `${viewer.index + 1} / ${images.length}`;
+      },
+      prefetch(index) {
+        prefetchPreview(index);
+        preloadHi(images[(index + images.length) % images.length]);
+      }
+    };
   }
-}
 </script>
 
 {% schema %}
