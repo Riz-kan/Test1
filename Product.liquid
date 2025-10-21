@@ -502,6 +502,7 @@
     left: 50%;
     transform: translate3d(-50%, -50%, 0);
     transition: transform 0.36s ease, opacity 0.24s ease;
+    will-change: transform, opacity;
     pointer-events: none;
     user-select: none;
     z-index: 2;
@@ -871,6 +872,7 @@
       let startDrag = null;
       let swipeIntent = null;
       let activeSlide = null;
+      let slideLock = false;
       let focusables = [];
       let firstEl = null;
       let lastEl = null;
@@ -892,7 +894,10 @@
         const contentH = state.baseH * state.scale;
         const maxX = Math.max(0, (contentW - state.viewW) / 2);
         const maxY = Math.max(0, (contentH - state.viewH) / 2);
-        const allowOvershoot = lightbox.classList.contains('dragging') && state.scale > 1;
+        const allowOvershoot =
+          lightbox.classList.contains('dragging') &&
+          state.scale > 1 &&
+          !stage.classList.contains('is-sliding');
         const overshootFactor = allowOvershoot ? 0.18 : 0;
         const bufferX = allowOvershoot ? Math.min(state.viewW * overshootFactor, 140) : 0;
         const bufferY = allowOvershoot ? Math.min(state.viewH * overshootFactor, 140) : 0;
@@ -909,6 +914,20 @@
           });
         }
       };
+
+      function safeMeasureAndReset() {
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            if (stage.classList.contains('is-sliding') || slideLock) {
+              safeMeasureAndReset();
+              return;
+            }
+            measureBase();
+            resetView();
+            zoomedImage.classList.remove('is-swapping');
+          });
+        });
+      }
 
       function measureBase() {
         const prev = zoomedImage.style.transform;
@@ -930,7 +949,11 @@
       const showUI = () => {
         lightbox.classList.remove('ui-hidden');
         clearTimeout(idleTimer);
-        idleTimer = setTimeout(() => lightbox.classList.add('ui-hidden'), 1600);
+        idleTimer = setTimeout(() => {
+          if (!stage.classList.contains('is-sliding')) {
+            lightbox.classList.add('ui-hidden');
+          }
+        }, 1600);
       };
 
       function buildDots() {
@@ -955,6 +978,17 @@
         }
       }
 
+      function preloadAround(i) {
+        if (!images.length) return;
+        [i, i + 1, i - 1].forEach((ii) => {
+          const n = images[(ii + images.length) % images.length];
+          if (n) {
+            const im = new Image();
+            im.src = n.src;
+          }
+        });
+      }
+
       function resetView() {
         state.scale = 1;
         state.tx = 0;
@@ -975,6 +1009,10 @@
 
       function setSlide(index, direction) {
         if (!images.length) {
+          return;
+        }
+
+        if (stage.classList.contains('is-sliding') || slideLock) {
           return;
         }
 
@@ -1020,9 +1058,13 @@
           clone.setAttribute('aria-hidden', 'true');
           clone.classList.add('slide-clone');
           clone.src = zoomedImage.currentSrc || zoomedImage.src;
+          // freeze clone by reading current values once and never touching state again
+          const freezeTx = state.tx;
+          const freezeTy = state.ty;
+          const freezeScale = state.scale;
           const applyClone = (deltaX = 0) => {
             clone.style.transform =
-              `translate3d(-50%, -50%, 0) translate3d(${state.tx + deltaX}px, ${state.ty}px, 0) scale(${state.scale})`;
+              `translate3d(-50%, -50%, 0) translate3d(${freezeTx + deltaX}px, ${freezeTy}px, 0) scale(${freezeScale})`;
           };
           applyClone();
           stage.appendChild(clone);
@@ -1055,6 +1097,8 @@
               zoomedImage.style.transition = '';
               zoomedImage.style.visibility = '';
               stage.classList.add('is-sliding', slideClass);
+              lightbox.classList.remove('ui-hidden');
+              clearTimeout(idleTimer);
               requestAnimationFrame(() => {
                 state.slideOffset = 0;
                 clampPan();
@@ -1074,6 +1118,7 @@
                 finished = true;
                 clearTimeout(fallbackTimer);
                 clone.remove();
+                slideLock = false;
                 onComplete?.();
               };
               const handleCloneEnd = () => {
@@ -1112,6 +1157,7 @@
 
         let slidePrep = null;
         if (resolvedDirection) {
+          slideLock = true;
           state.scale = 1;
           state.tx = 0;
           state.ty = 0;
@@ -1132,11 +1178,8 @@
             slidePrep.cleanup();
             activeSlide = null;
           }
-          measureBase();
-          resetView();
-          requestAnimationFrame(() => {
-            zoomedImage.classList.remove('is-swapping');
-          });
+          slideLock = false;
+          safeMeasureAndReset();
         };
 
         const maybeFinish = () => {
@@ -1150,6 +1193,7 @@
           imageReady = true;
           if (slidePrep) {
             slidePrep.start(() => {
+              slideLock = false;
               animationDone = true;
               maybeFinish();
             });
@@ -1165,6 +1209,7 @@
           if (activeSlide === slidePrep) {
             activeSlide = null;
           }
+          slideLock = false;
           zoomedImage.classList.remove('is-swapping');
           zoomedImage.style.visibility = '';
           const fallback = images[previousIndex];
@@ -1203,6 +1248,7 @@
 
         requestAnimationFrame(() => {
           measureBase();
+          preloadAround(index);
           setSlide(index);
           trapFocus();
           zoomToggle?.focus();
@@ -1214,6 +1260,9 @@
         lightbox.classList.remove('open', 'ui-hidden', 'dragging');
         lightbox.setAttribute('aria-hidden', 'true');
         body.style.overflow = body.dataset.prevOverflow || '';
+        activeSlide?.cleanup(true);
+        activeSlide = null;
+        slideLock = false;
         pts.clear();
         pinchStart = null;
         startDrag = null;
@@ -1358,7 +1407,8 @@
       stage.addEventListener('wheel', (event) => {
         if (!viewer.isOpen) return;
         event.preventDefault();
-        const factor = Math.exp(-event.deltaY * 0.0015);
+        const raw = Math.exp(-event.deltaY * 0.0015);
+        const factor = Math.min(1 / 0.85, Math.max(0.85, raw));
         const rect = stage.getBoundingClientRect();
         const cx = event.clientX - (rect.left + rect.width / 2);
         const cy = event.clientY - (rect.top + rect.height / 2);
