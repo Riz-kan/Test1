@@ -390,10 +390,18 @@
     position: fixed;
     inset: 0;
     background: #fff;
-    display: none;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity;
     z-index: 999;
   }
-  .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.open {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -402,6 +410,14 @@
     align-items: center;
     overflow: hidden;
     touch-action: none;
+    transform: translate3d(0, 0, 0) scale(1);
+    transform-origin: center center;
+    transition: transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+  }
+  .pdp-scope .pdp-lightbox.reveal-from .stage {
+    transform: translate3d(var(--pdp-zoom-enter-x, 0), var(--pdp-zoom-enter-y, 0), 0)
+      scale(var(--pdp-zoom-enter-scale-x, 1), var(--pdp-zoom-enter-scale-y, 1));
   }
   .pdp-scope .pdp-zoom-image {
     display: block;
@@ -525,6 +541,8 @@
   .pdp-scope .pdp-lightbox.ui-hidden .controls .btn,
   .pdp-scope .pdp-lightbox.ui-hidden .side-nav .btn { opacity: 0; }
   @media (prefers-reduced-motion: reduce) {
+    .pdp-scope .pdp-lightbox,
+    .pdp-scope .pdp-lightbox .stage,
     .pdp-scope .pdp-lightbox .btn,
     .pdp-scope .pdp-zoom-image {
       transition: none !important;
@@ -856,6 +874,55 @@
       }
 
       const body = document.body;
+      const ENTRANCE_PROPS = ['--pdp-zoom-enter-x', '--pdp-zoom-enter-y', '--pdp-zoom-enter-scale-x', '--pdp-zoom-enter-scale-y'];
+      let entranceListener = null;
+
+      const clearEntranceAnimation = () => {
+        if (entranceListener) {
+          stage.removeEventListener('transitionend', entranceListener);
+          entranceListener = null;
+        }
+        lightbox.classList.remove('reveal-from', 'is-opening');
+        ENTRANCE_PROPS.forEach((prop) => lightbox.style.removeProperty(prop));
+      };
+
+      const animateEntrance = (opener) => {
+        clearEntranceAnimation();
+        if (!opener || typeof opener.getBoundingClientRect !== 'function' || lightbox.contains(opener)) {
+          return;
+        }
+        const stageRect = stage.getBoundingClientRect();
+        const openerRect = opener.getBoundingClientRect();
+        if (!stageRect.width || !stageRect.height || !openerRect.width || !openerRect.height) {
+          return;
+        }
+        const translateX = openerRect.left + openerRect.width / 2 - (stageRect.left + stageRect.width / 2);
+        const translateY = openerRect.top + openerRect.height / 2 - (stageRect.top + stageRect.height / 2);
+        const scaleX = openerRect.width / stageRect.width;
+        const scaleY = openerRect.height / stageRect.height;
+        lightbox.style.setProperty(ENTRANCE_PROPS[0], `${translateX}px`);
+        lightbox.style.setProperty(ENTRANCE_PROPS[1], `${translateY}px`);
+        lightbox.style.setProperty(ENTRANCE_PROPS[2], scaleX.toFixed(4));
+        lightbox.style.setProperty(ENTRANCE_PROPS[3], scaleY.toFixed(4));
+        lightbox.classList.add('reveal-from');
+        stage.getBoundingClientRect();
+        requestAnimationFrame(() => {
+          if (!lightbox.classList.contains('open')) {
+            clearEntranceAnimation();
+            return;
+          }
+          lightbox.classList.add('is-opening');
+          lightbox.classList.remove('reveal-from');
+        });
+        entranceListener = (event) => {
+          if (event.target !== stage || event.propertyName !== 'transform') {
+            return;
+          }
+          clearEntranceAnimation();
+        };
+        stage.addEventListener('transitionend', entranceListener);
+      };
+
       const state = { scale: 1, min: 1, max: 6, tx: 0, ty: 0, slideOffset: 0, baseW: 0, baseH: 0, viewW: 0, viewH: 0 };
       const viewer = { index: 0, isOpen: false };
       const pts = new Map();
@@ -1195,15 +1262,19 @@
           return;
         }
         viewer.isOpen = true;
+        prevActive = opener || document.activeElement;
+        setSlide(index);
+        lightbox.classList.remove('ui-hidden', 'dragging');
         lightbox.classList.add('open');
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
-        prevActive = opener || document.activeElement;
+        animateEntrance(opener);
 
         requestAnimationFrame(() => {
-          measureBase();
-          setSlide(index);
+          if (!viewer.isOpen) {
+            return;
+          }
           trapFocus();
           zoomToggle?.focus();
         });
@@ -1211,6 +1282,7 @@
 
       function closeLightbox() {
         viewer.isOpen = false;
+        clearEntranceAnimation();
         lightbox.classList.remove('open', 'ui-hidden', 'dragging');
         lightbox.setAttribute('aria-hidden', 'true');
         body.style.overflow = body.dataset.prevOverflow || '';
