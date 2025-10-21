@@ -392,8 +392,11 @@
     background: #fff;
     display: none;
     z-index: 999;
+    opacity: 0;
+    transition: opacity 0.28s cubic-bezier(.22,1,.36,1);
   }
   .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.is-visible { opacity: 1; }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -871,6 +874,8 @@
       let startDrag = null;
       let swipeIntent = null;
       let activeSlide = null;
+      let fadeOutTimer = null;
+      let closeTransitionHandler = null;
       let focusables = [];
       let firstEl = null;
       let lastEl = null;
@@ -1195,13 +1200,24 @@
           return;
         }
         viewer.isOpen = true;
+        if (fadeOutTimer) {
+          clearTimeout(fadeOutTimer);
+          fadeOutTimer = null;
+        }
+        if (closeTransitionHandler) {
+          lightbox.removeEventListener('transitionend', closeTransitionHandler);
+          closeTransitionHandler = null;
+        }
         lightbox.classList.add('open');
+        lightbox.classList.remove('is-visible');
+        lightbox.style.willChange = 'opacity';
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
         prevActive = opener || document.activeElement;
 
         requestAnimationFrame(() => {
+          lightbox.classList.add('is-visible');
           measureBase();
           setSlide(index);
           trapFocus();
@@ -1211,7 +1227,46 @@
 
       function closeLightbox() {
         viewer.isOpen = false;
-        lightbox.classList.remove('open', 'ui-hidden', 'dragging');
+        lightbox.classList.remove('ui-hidden', 'dragging');
+        lightbox.classList.remove('is-visible');
+        lightbox.style.willChange = 'opacity';
+
+        if (closeTransitionHandler) {
+          lightbox.removeEventListener('transitionend', closeTransitionHandler);
+          closeTransitionHandler = null;
+        }
+
+        let closing = false;
+        const finalizeClose = () => {
+          if (closing) {
+            return;
+          }
+          closing = true;
+          lightbox.removeEventListener('transitionend', handleTransitionEnd);
+          closeTransitionHandler = null;
+          lightbox.classList.remove('open');
+          lightbox.style.willChange = '';
+          if (fadeOutTimer) {
+            clearTimeout(fadeOutTimer);
+            fadeOutTimer = null;
+          }
+        };
+        const handleTransitionEnd = (event) => {
+          if (event.target !== lightbox || event.propertyName !== 'opacity') {
+            return;
+          }
+          finalizeClose();
+        };
+
+        lightbox.addEventListener('transitionend', handleTransitionEnd);
+        closeTransitionHandler = handleTransitionEnd;
+
+        if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+          finalizeClose();
+        } else {
+          fadeOutTimer = window.setTimeout(finalizeClose, 320);
+        }
+
         lightbox.setAttribute('aria-hidden', 'true');
         body.style.overflow = body.dataset.prevOverflow || '';
         pts.clear();
