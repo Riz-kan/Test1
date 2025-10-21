@@ -868,6 +868,8 @@
     let closing = false;
     let toastEl = null;
     let toastTimer = 0;
+    let hiSwapTimer = 0;
+    let zoomButtonShowsReset = false;
 
     const SWIPE_HORIZONTAL_THRESHOLD = 48;
     const SWIPE_VERTICAL_LIMIT = 40;
@@ -947,13 +949,21 @@
       frame.style.willChange = moving ? 'transform' : '';
     }
 
+    const updateZoomToggle = (needsReset) => {
+      if (zoomButtonShowsReset === needsReset) {
+        return;
+      }
+      zoomButtonShowsReset = needsReset;
+      zoomToggle.innerHTML = needsReset ? iconZoomReset : iconZoomIn;
+      zoomToggle.setAttribute('aria-label', needsReset ? 'Reset zoom' : 'Zoom in');
+    };
+
     const apply = () => {
       const slideX = state.slideOffset || 0;
       frame.style.transform = `translate3d(-50%, -50%, 0) translate3d(${state.tx + slideX}px, ${state.ty}px, 0) scale(${state.scale})`;
       updateWillChange();
       const needsReset = state.scale > 1.01 || Math.abs(state.tx) > 1 || Math.abs(state.ty) > 1;
-      zoomToggle.innerHTML = needsReset ? iconZoomReset : iconZoomIn;
-      zoomToggle.setAttribute('aria-label', needsReset ? 'Reset zoom' : 'Zoom in');
+      updateZoomToggle(needsReset);
     };
 
     function clampPan() {
@@ -1002,6 +1012,7 @@
       state.tx = 0;
       state.ty = 0;
       state.slideOffset = 0;
+      updateZoomToggle(false);
       schedule();
     }
 
@@ -1087,6 +1098,8 @@
     }
 
     function commitHiSwap(item) {
+      clearTimeout(hiSwapTimer);
+      hiSwapTimer = 0;
       if (!viewer.isOpen || !item || pendingHi !== item) return;
       if (!item.hi || item.hi === item.preview) return;
       if (baseImage.currentSrc === item.hi || baseImage.src === item.hi) return;
@@ -1098,11 +1111,16 @@
       hiImage.src = item.hi;
       hiImage.dataset.active = 'true';
       frame.classList.add('is-fading');
-      window.setTimeout(() => {
+      hiSwapTimer = window.setTimeout(() => {
+        if (!viewer.isOpen || pendingHi !== item) {
+          hiSwapTimer = 0;
+          return;
+        }
         baseImage.src = item.hi;
         frame.classList.remove('is-fading');
         hiImage.dataset.active = 'false';
         hiImage.removeAttribute('src');
+        hiSwapTimer = 0;
       }, fadeMs + 40);
     }
 
@@ -1224,6 +1242,8 @@
         return;
       }
       const { immediate = false, deferHiSwap = false, initialSrc = null } = options;
+      clearTimeout(hiSwapTimer);
+      hiSwapTimer = 0;
       const previousIndex = viewer.index;
       const rawIndex = typeof index === 'number' ? index : viewer.index;
       let resolvedDirection = typeof direction === 'string' ? direction : null;
@@ -1478,11 +1498,14 @@
         startDrag = null;
         swipeIntent = null;
         clearTimeout(idleTimer);
+        clearTimeout(hiSwapTimer);
+        hiSwapTimer = 0;
         releaseFocus();
         releaseFocus = () => {};
         prevActive?.focus?.();
         openerEl = null;
         pendingHi = null;
+        updateZoomToggle(false);
       };
 
       const openerRect = openerEl ? openerEl.getBoundingClientRect() : null;
