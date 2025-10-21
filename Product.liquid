@@ -390,10 +390,19 @@
     position: fixed;
     inset: 0;
     background: #fff;
-    display: none;
+    display: block;
+    opacity: 0;
+    visibility: hidden;
+    pointer-events: none;
+    transition: opacity 0.28s ease;
     z-index: 999;
   }
   .pdp-scope .pdp-lightbox.open { display: block; }
+  .pdp-scope .pdp-lightbox.is-visible {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
+  }
   .pdp-scope .pdp-lightbox .stage {
     position: absolute;
     inset: 0;
@@ -402,7 +411,23 @@
     align-items: center;
     overflow: hidden;
     touch-action: none;
+    transform: translate3d(0, 12px, 0) scale(0.98);
+    transition: transform 0.32s ease;
+    will-change: transform;
   }
+  .pdp-scope .pdp-lightbox.is-visible .stage {
+    transform: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .pdp-scope .pdp-lightbox {
+      transition: none !important;
+    }
+    .pdp-scope .pdp-lightbox .stage {
+      transition: none !important;
+      transform: none !important;
+    }
+  }
+
   .pdp-scope .pdp-zoom-image {
     display: block;
     width: auto;
@@ -488,6 +513,7 @@
   .pdp-scope .pdp-lightbox .stage.is-sliding {
     --pdp-zoom-transform-speed: 0.36s;
     pointer-events: none;
+    transition: none !important;
   }
   .pdp-scope .pdp-lightbox .stage.slide-next,
   .pdp-scope .pdp-lightbox .stage.slide-prev {
@@ -875,6 +901,8 @@
       let firstEl = null;
       let lastEl = null;
       let prevActive = null;
+      let closeTimer = null;
+      let closeTransitionHandler = null;
 
       const apply = () => {
         const slideX = state.slideOffset || 0;
@@ -1194,8 +1222,19 @@
         if (!images.length) {
           return;
         }
+
+        if (closeTransitionHandler) {
+          lightbox.removeEventListener('transitionend', closeTransitionHandler);
+          closeTransitionHandler = null;
+        }
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = null;
+        }
+
         viewer.isOpen = true;
         lightbox.classList.add('open');
+        lightbox.classList.remove('is-hiding', 'ui-hidden', 'dragging');
         lightbox.setAttribute('aria-hidden', 'false');
         body.dataset.prevOverflow = body.style.overflow || '';
         body.style.overflow = 'hidden';
@@ -1206,19 +1245,65 @@
           setSlide(index);
           trapFocus();
           zoomToggle?.focus();
+
+          requestAnimationFrame(() => {
+            lightbox.classList.add('is-visible');
+          });
         });
       }
 
       function closeLightbox() {
+        if (!viewer.isOpen && !lightbox.classList.contains('open')) {
+          return;
+        }
+
+        if (closeTransitionHandler) {
+          lightbox.removeEventListener('transitionend', closeTransitionHandler);
+          closeTransitionHandler = null;
+        }
+        if (closeTimer) {
+          clearTimeout(closeTimer);
+          closeTimer = null;
+        }
+
         viewer.isOpen = false;
-        lightbox.classList.remove('open', 'ui-hidden', 'dragging');
+        lightbox.classList.remove('is-visible');
+        lightbox.classList.add('is-hiding');
         lightbox.setAttribute('aria-hidden', 'true');
-        body.style.overflow = body.dataset.prevOverflow || '';
-        pts.clear();
-        pinchStart = null;
-        startDrag = null;
-        clearTimeout(idleTimer);
-        releaseFocus();
+
+        const motionPreference = typeof window !== 'undefined' && window.matchMedia
+          ? window.matchMedia('(prefers-reduced-motion: reduce)')
+          : null;
+        const fallbackDelay = motionPreference && motionPreference.matches ? 0 : 480;
+
+        const finalizeClose = () => {
+          if (closeTransitionHandler) {
+            lightbox.removeEventListener('transitionend', closeTransitionHandler);
+            closeTransitionHandler = null;
+          }
+          if (closeTimer) {
+            clearTimeout(closeTimer);
+            closeTimer = null;
+          }
+          lightbox.classList.remove('open', 'ui-hidden', 'dragging', 'is-hiding');
+          body.style.overflow = body.dataset.prevOverflow || '';
+          pts.clear();
+          pinchStart = null;
+          startDrag = null;
+          clearTimeout(idleTimer);
+          idleTimer = null;
+          activeSlide?.cleanup(true);
+          activeSlide = null;
+          releaseFocus();
+        };
+
+        closeTransitionHandler = (event) => {
+          if (event.target !== lightbox) return;
+          finalizeClose();
+        };
+
+        lightbox.addEventListener('transitionend', closeTransitionHandler);
+        closeTimer = setTimeout(finalizeClose, fallbackDelay);
       }
 
       closeBtn.addEventListener('click', closeLightbox);
