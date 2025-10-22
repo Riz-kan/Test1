@@ -61,6 +61,16 @@
     justify-content: center;
     background: #fff;            /* no flashes */
   }
+  .clone.closing{
+    background: transparent;
+  }
+  .clone.closing .clone-img{
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    object-fit: cover;
+  }
 
   /* Image inside overlay (never crop) */
   .clone-img{
@@ -191,6 +201,27 @@
 
   const computeTargetRect = () => rect(targetBox);
 
+  let scrollLocked = false;
+  let previousBodyOverflow = '';
+  function lockScroll(){
+    if (scrollLocked) return;
+    previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    scrollLocked = true;
+  }
+  function unlockScroll(){
+    if (!scrollLocked) return;
+    document.body.style.overflow = previousBodyOverflow;
+    scrollLocked = false;
+  }
+
+  const isRectOffscreen = r => (
+    r.bottom <= 0 ||
+    r.top    >= window.innerHeight ||
+    r.right  <= 0 ||
+    r.left   >= window.innerWidth
+  );
+
   /* ===== Clamp panning so no blank space shows ===== */
   function clampPan(dx, dy, scale){
     const box = cloneBox.getBoundingClientRect();
@@ -225,10 +256,12 @@
     if (animating) return; animating = true;
     isZoomed = false; currentScale = 1; currentTx = currentTy = 0;
     overlay.classList.remove('zoomed','ready');
+    cloneBox.classList.remove('closing');
 
     const from = rect(thumbFrame);
     overlay.classList.add('active');
     overlay.setAttribute('aria-hidden','false');
+    lockScroll();
 
     Object.assign(cloneBox.style, {
       width: from.w + 'px',
@@ -263,28 +296,155 @@
     isZoomed = false;
     applyTransform(0,0,1);
 
-    const toRect = rect(thumbFrame);
-    cloneBox.style.width  = toRect.w + 'px';
-    cloneBox.style.height = toRect.h + 'px';
-    cloneBox.style.transform = `translate(${toRect.x}px, ${toRect.y}px) scale(1,1)`;
+    isDragging = false;
+    dragActivated = false;
+    pointers.clear();
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
 
-    cloneBox.addEventListener('transitionend', onClosed, { once: true });
-    function onClosed(){
-      overlay.classList.remove('active');
-      overlay.setAttribute('aria-hidden','true');
-      thumbFrame.style.visibility = 'visible';
-      overlay.removeEventListener('click', onOverlayBackgroundClick);
-      window.removeEventListener('keydown', onKey);
-      disableGestureHandlers();
-      // Return focus to thumb for accessibility
-      thumbFrame.focus?.({ preventScroll: true });
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const startRect = cloneBox.getBoundingClientRect();
+
+    cloneBox.classList.add('closing');
+
+    const originalStyles = {
+      transition: cloneBox.style.transition,
+      position: cloneBox.style.position,
+      left: cloneBox.style.left,
+      top: cloneBox.style.top,
+      width: cloneBox.style.width,
+      height: cloneBox.style.height,
+      transform: cloneBox.style.transform,
+      zIndex: cloneBox.style.zIndex,
+      opacity: cloneBox.style.opacity,
+      pointerEvents: cloneBox.style.pointerEvents,
+      transformOrigin: cloneBox.style.transformOrigin,
+    };
+
+    cloneBox.style.transition = 'none';
+    cloneBox.style.position = 'fixed';
+    cloneBox.style.left = '0px';
+    cloneBox.style.top = '0px';
+    cloneBox.style.width = startRect.width + 'px';
+    cloneBox.style.height = startRect.height + 'px';
+    cloneBox.style.transform = `translate(${startRect.left}px, ${startRect.top}px) scale(1)`;
+    cloneBox.style.zIndex = '9999';
+    cloneBox.style.opacity = '1';
+    cloneBox.style.pointerEvents = 'none';
+    void cloneBox.offsetWidth;
+
+    document.body.appendChild(cloneBox);
+
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden','true');
+
+    overlay.removeEventListener('click', onOverlayBackgroundClick);
+    window.removeEventListener('keydown', onKey);
+    disableGestureHandlers();
+
+    let finished = false;
+    let cleanupTimer = null;
+    let handleTransitionEnd = null;
+
+    const restoreClone = () => {
+      cloneBox.style.transition = originalStyles.transition;
+      cloneBox.style.position = originalStyles.position;
+      cloneBox.style.left = originalStyles.left;
+      cloneBox.style.top = originalStyles.top;
+      cloneBox.style.width = originalStyles.width;
+      cloneBox.style.height = originalStyles.height;
+      cloneBox.style.transform = originalStyles.transform;
+      cloneBox.style.zIndex = originalStyles.zIndex;
+      cloneBox.style.opacity = originalStyles.opacity;
+      cloneBox.style.pointerEvents = originalStyles.pointerEvents;
+      cloneBox.style.transformOrigin = originalStyles.transformOrigin;
+      overlay.insertBefore(cloneBox, overlay.firstChild);
+      cloneBox.classList.remove('closing');
+    };
+
+    const finalize = () => {
+      if (finished) return;
+      finished = true;
+      if (cleanupTimer !== null){
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+      }
+      if (handleTransitionEnd){
+        cloneBox.removeEventListener('transitionend', handleTransitionEnd);
+        handleTransitionEnd = null;
+      }
+      restoreClone();
+      if (thumbFrame){
+        thumbFrame.style.visibility = 'visible';
+      }
+      unlockScroll();
+      if (thumbFrame?.isConnected){
+        thumbFrame.focus?.({ preventScroll: true });
+      }
       animating = false;
+    };
+
+    if (reduceMotion){
+      finalize();
+      return;
     }
+
+    requestAnimationFrame(() => {
+      if (finished) return;
+      const toRect = thumbFrame.isConnected ? thumbFrame.getBoundingClientRect() : null;
+      const needsFallback = !toRect || toRect.width === 0 || toRect.height === 0 || isRectOffscreen(toRect);
+
+      if (needsFallback){
+        const shrinkRatio = 0.82;
+        const targetW = startRect.width * shrinkRatio;
+        const targetH = startRect.height * shrinkRatio;
+        const offsetX = (startRect.width - targetW) / 2;
+        const offsetY = (startRect.height - targetH) / 2;
+
+        cloneBox.style.transition = 'transform 200ms var(--ease), width 200ms var(--ease), height 200ms var(--ease), opacity 200ms var(--ease)';
+        void cloneBox.offsetWidth;
+        cloneBox.style.opacity = '0';
+        cloneBox.style.width = targetW + 'px';
+        cloneBox.style.height = targetH + 'px';
+        cloneBox.style.transform = `translate(${startRect.left + offsetX}px, ${startRect.top + offsetY}px) scale(1)`;
+
+        handleTransitionEnd = (event) => {
+          if (event.target !== cloneBox) return;
+          finalize();
+        };
+        cloneBox.addEventListener('transitionend', handleTransitionEnd);
+        cleanupTimer = setTimeout(finalize, 350);
+        return;
+      }
+
+      cloneBox.style.transition = originalStyles.transition || '';
+      void cloneBox.offsetWidth;
+      cloneBox.style.width = toRect.width + 'px';
+      cloneBox.style.height = toRect.height + 'px';
+      cloneBox.style.transform = `translate(${toRect.x}px, ${toRect.y}px) scale(1)`;
+
+      handleTransitionEnd = (event) => {
+        if (event.target !== cloneBox) return;
+        finalize();
+      };
+      cloneBox.addEventListener('transitionend', handleTransitionEnd);
+      const flightDuration = cssVar('--dur', 520);
+      cleanupTimer = setTimeout(finalize, flightDuration + 150);
+    });
   }
 
   function onOverlayBackgroundClick(e){
-    // Only close if clicking outside the image box
-    if (cloneBox.contains(e.target)) return;
+    // Only close if the pointer is outside the actual image bounds
+    const withinClone = cloneBox.contains(e.target);
+    if (withinClone){
+      const imgRect = cloneImg.getBoundingClientRect();
+      const insideImage = (
+        e.clientX >= imgRect.left && e.clientX <= imgRect.right &&
+        e.clientY >= imgRect.top  && e.clientY <= imgRect.bottom
+      );
+      if (insideImage) return;
+    }
     closeZoom();
   }
 
