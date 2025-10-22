@@ -49,11 +49,12 @@
   .clone{
     position: absolute; top: 0; left: 0;
     transform-origin: top left;
-    will-change: transform, width, height;
+    will-change: transform, width, height, opacity;
     transition:
       transform var(--dur) var(--ease),
       width var(--dur) var(--ease),
-      height var(--dur) var(--ease);
+      height var(--dur) var(--ease),
+      opacity 260ms var(--ease);
     border-radius: var(--thumb-radius);
     overflow: hidden;
     display: flex;
@@ -158,6 +159,35 @@
   const SRC = thumbImg.currentSrc || thumbImg.src;
   cloneImg.src = SRC;
 
+  const reduceMotionQuery = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null;
+  const prefersReducedMotion = () => Boolean(reduceMotionQuery && reduceMotionQuery.matches);
+
+  let restoreScroll = null;
+  function lockScroll(){
+    if (restoreScroll) return;
+    const docEl = document.documentElement;
+    const prevOverflow = docEl.style.overflow;
+    const prevPaddingRight = document.body.style.paddingRight;
+    const computedPadding = parseFloat(getComputedStyle(document.body).paddingRight) || 0;
+    const scrollBarWidth = window.innerWidth - docEl.clientWidth;
+
+    if (scrollBarWidth > 0){
+      document.body.style.paddingRight = `${computedPadding + scrollBarWidth}px`;
+    }
+    docEl.style.overflow = 'hidden';
+
+    restoreScroll = () => {
+      docEl.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPaddingRight;
+    };
+  }
+
+  function unlockScroll(){
+    if (!restoreScroll) return;
+    restoreScroll();
+    restoreScroll = null;
+  }
+
   /* ===== State ===== */
   let animating = false;
   let isZoomed  = false;
@@ -188,6 +218,11 @@
     const r = el.getBoundingClientRect();
     return { x:r.left, y:r.top, w:r.width, h:r.height };
   };
+
+  const isRectVisible = r => (
+    r.w > 0 && r.h > 0 &&
+    !(r.y + r.h < 0 || r.y > window.innerHeight || r.x + r.w < 0 || r.x > window.innerWidth)
+  );
 
   const computeTargetRect = () => rect(targetBox);
 
@@ -229,6 +264,7 @@
     const from = rect(thumbFrame);
     overlay.classList.add('active');
     overlay.setAttribute('aria-hidden','false');
+    lockScroll();
 
     Object.assign(cloneBox.style, {
       width: from.w + 'px',
@@ -262,23 +298,96 @@
     overlay.classList.remove('zoomed','ready');
     isZoomed = false;
     applyTransform(0,0,1);
+    cloneImg.style.transition = '';
 
-    const toRect = rect(thumbFrame);
-    cloneBox.style.width  = toRect.w + 'px';
-    cloneBox.style.height = toRect.h + 'px';
-    cloneBox.style.transform = `translate(${toRect.x}px, ${toRect.y}px) scale(1,1)`;
+    overlay.removeEventListener('click', onOverlayBackgroundClick);
+    window.removeEventListener('keydown', onKey);
+    disableGestureHandlers();
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
+    isDragging = false;
+    dragActivated = false;
+    pointers.forEach((_, pointerId) => {
+      cloneImg.releasePointerCapture?.(pointerId);
+    });
+    pointers.clear();
 
-    cloneBox.addEventListener('transitionend', onClosed, { once: true });
-    function onClosed(){
-      overlay.classList.remove('active');
-      overlay.setAttribute('aria-hidden','true');
-      thumbFrame.style.visibility = 'visible';
-      overlay.removeEventListener('click', onOverlayBackgroundClick);
-      window.removeEventListener('keydown', onKey);
-      disableGestureHandlers();
-      // Return focus to thumb for accessibility
+    const reduceMotion = prefersReducedMotion();
+    const startRect = rect(cloneBox);
+    const placeholder = document.createComment('clone-placeholder');
+    overlay.replaceChild(placeholder, cloneBox);
+    document.body.appendChild(cloneBox);
+
+    Object.assign(cloneBox.style, {
+      position: 'fixed',
+      top: '0',
+      left: '0',
+      margin: '0',
+      width: `${startRect.w}px`,
+      height: `${startRect.h}px`,
+      transform: `translate(${startRect.x}px, ${startRect.y}px) scale(1,1)`,
+      opacity: '1',
+      pointerEvents: 'none',
+      zIndex: '10000'
+    });
+
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden','true');
+
+    let onFlightEnd = null;
+
+    const cleanup = () => {
+      if (onFlightEnd){
+        cloneBox.removeEventListener('transitionend', onFlightEnd);
+      }
+      onFlightEnd = null;
+      cloneBox.style.position = '';
+      cloneBox.style.top = '';
+      cloneBox.style.left = '';
+      cloneBox.style.margin = '';
+      cloneBox.style.width = '';
+      cloneBox.style.height = '';
+      cloneBox.style.transform = '';
+      cloneBox.style.opacity = '';
+      cloneBox.style.pointerEvents = '';
+      cloneBox.style.zIndex = '';
+      cloneBox.style.transition = '';
+      placeholder.replaceWith(cloneBox);
+      thumbFrame.style.visibility = '';
+      unlockScroll();
       thumbFrame.focus?.({ preventScroll: true });
       animating = false;
+    };
+
+    if (reduceMotion){
+      cleanup();
+      return;
+    }
+
+    const targetRect = rect(thumbFrame);
+
+    onFlightEnd = event => {
+      if (event.target !== cloneBox) return;
+      if (event.propertyName && !['transform','width','height','opacity'].includes(event.propertyName)) return;
+      cleanup();
+    };
+
+    cloneBox.addEventListener('transitionend', onFlightEnd);
+
+    if (isRectVisible(targetRect)){
+      requestAnimationFrame(() => {
+        const latest = rect(thumbFrame);
+        cloneBox.style.width  = `${latest.w}px`;
+        cloneBox.style.height = `${latest.h}px`;
+        cloneBox.style.transform = `translate(${latest.x}px, ${latest.y}px) scale(1,1)`;
+      });
+    } else {
+      cloneBox.style.transition = 'transform 200ms var(--ease), opacity 200ms var(--ease)';
+      requestAnimationFrame(() => {
+        cloneBox.style.opacity = '0';
+        cloneBox.style.transform = `translate(${startRect.x}px, ${startRect.y}px) scale(0.8)`;
+      });
     }
   }
 
