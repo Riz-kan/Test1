@@ -61,6 +61,16 @@
     justify-content: center;
     background: #fff;            /* no flashes */
   }
+  .clone.closing{
+    background: transparent;
+  }
+  .clone.closing .clone-img{
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    object-fit: cover;
+  }
 
   /* Image inside overlay (never crop) */
   .clone-img{
@@ -246,6 +256,7 @@
     if (animating) return; animating = true;
     isZoomed = false; currentScale = 1; currentTx = currentTy = 0;
     overlay.classList.remove('zoomed','ready');
+    cloneBox.classList.remove('closing');
 
     const from = rect(thumbFrame);
     overlay.classList.add('active');
@@ -294,6 +305,8 @@
 
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const startRect = cloneBox.getBoundingClientRect();
+
+    cloneBox.classList.add('closing');
 
     const originalStyles = {
       transition: cloneBox.style.transition,
@@ -347,6 +360,7 @@
       cloneBox.style.pointerEvents = originalStyles.pointerEvents;
       cloneBox.style.transformOrigin = originalStyles.transformOrigin;
       overlay.insertBefore(cloneBox, overlay.firstChild);
+      cloneBox.classList.remove('closing');
     };
 
     const finalize = () => {
@@ -421,8 +435,16 @@
   }
 
   function onOverlayBackgroundClick(e){
-    // Only close if clicking outside the image box
-    if (cloneBox.contains(e.target)) return;
+    // Only close if the pointer is outside the actual image bounds
+    const withinClone = cloneBox.contains(e.target);
+    if (withinClone){
+      const imgRect = cloneImg.getBoundingClientRect();
+      const insideImage = (
+        e.clientX >= imgRect.left && e.clientX <= imgRect.right &&
+        e.clientY >= imgRect.top  && e.clientY <= imgRect.bottom
+      );
+      if (insideImage) return;
+    }
     closeZoom();
   }
 
