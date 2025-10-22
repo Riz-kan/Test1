@@ -298,7 +298,11 @@
     if (animating) return; animating = true;
     overlay.classList.remove('zoomed','ready');
     isZoomed = false;
+
+    const previousCloneImgTransition = cloneImg.style.transition;
+    cloneImg.style.transition = 'none';
     applyTransform(0,0,1);
+    void cloneImg.offsetWidth;
 
     isDragging = false;
     dragActivated = false;
@@ -332,7 +336,7 @@
     cloneBox.style.top = '0px';
     cloneBox.style.width = startRect.width + 'px';
     cloneBox.style.height = startRect.height + 'px';
-    cloneBox.style.transform = `translate(${startRect.left}px, ${startRect.top}px) scale(1)`;
+    cloneBox.style.transform = `translate3d(${startRect.left}px, ${startRect.top}px, 0) scale(1, 1)`;
     cloneBox.style.zIndex = '9999';
     cloneBox.style.opacity = '1';
     cloneBox.style.pointerEvents = 'none';
@@ -354,7 +358,7 @@
     let handleTransitionEnd = null;
 
     const restoreClone = () => {
-      cloneBox.style.transition = originalStyles.transition;
+      cloneBox.style.transition = originalStyles.transition || '';
       cloneBox.style.position = originalStyles.position;
       cloneBox.style.left = originalStyles.left;
       cloneBox.style.top = originalStyles.top;
@@ -382,6 +386,7 @@
         handleTransitionEnd = null;
       }
       restoreClone();
+      cloneImg.style.transition = previousCloneImgTransition;
       if (thumbFrame){
         thumbFrame.style.visibility = 'visible';
       }
@@ -399,23 +404,26 @@
 
     requestAnimationFrame(() => {
       if (finished) return;
-      const toRect = thumbFrame.isConnected ? thumbFrame.getBoundingClientRect() : null;
+      if (startRect.width === 0 || startRect.height === 0){
+        finalize();
+        return;
+      }
+
+      const toRect = thumbFrame?.isConnected ? thumbFrame.getBoundingClientRect() : null;
       const needsFallback = !toRect || toRect.width === 0 || toRect.height === 0 || isRectOffscreen(toRect);
 
       if (needsFallback){
         cloneBox.classList.remove('returning');
         const shrinkRatio = 0.82;
-        const targetW = startRect.width * shrinkRatio;
-        const targetH = startRect.height * shrinkRatio;
-        const offsetX = (startRect.width - targetW) / 2;
-        const offsetY = (startRect.height - targetH) / 2;
+        const centerOffsetX = (startRect.width * (1 - shrinkRatio)) / 2;
+        const centerOffsetY = (startRect.height * (1 - shrinkRatio)) / 2;
 
-        cloneBox.style.transition = 'transform 200ms var(--ease), width 200ms var(--ease), height 200ms var(--ease), opacity 200ms var(--ease)';
+        cloneBox.style.transition = 'transform 200ms var(--ease), opacity 200ms var(--ease)';
         void cloneBox.offsetWidth;
         cloneBox.style.opacity = '0';
-        cloneBox.style.width = targetW + 'px';
-        cloneBox.style.height = targetH + 'px';
-        cloneBox.style.transform = `translate(${startRect.left + offsetX}px, ${startRect.top + offsetY}px) scale(1)`;
+        const fallbackX = startRect.left + centerOffsetX;
+        const fallbackY = startRect.top + centerOffsetY;
+        cloneBox.style.transform = `translate3d(${fallbackX}px, ${fallbackY}px, 0) scale(${shrinkRatio}, ${shrinkRatio})`;
 
         handleTransitionEnd = (event) => {
           if (event.target !== cloneBox) return;
@@ -426,11 +434,11 @@
         return;
       }
 
-      cloneBox.style.transition = originalStyles.transition || '';
+      cloneBox.style.transition = 'transform var(--dur) var(--ease)';
       void cloneBox.offsetWidth;
-      cloneBox.style.width = toRect.width + 'px';
-      cloneBox.style.height = toRect.height + 'px';
-      cloneBox.style.transform = `translate(${toRect.x}px, ${toRect.y}px) scale(1)`;
+      const scaleX = toRect.width / startRect.width;
+      const scaleY = toRect.height / startRect.height;
+      cloneBox.style.transform = `translate3d(${toRect.left}px, ${toRect.top}px, 0) scale(${scaleX}, ${scaleY})`;
 
       handleTransitionEnd = (event) => {
         if (event.target !== cloneBox) return;
