@@ -62,6 +62,18 @@
     background: #fff;            /* no flashes */
   }
 
+  .clone.returning{
+    background: transparent;
+  }
+
+  .clone.returning .clone-img{
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    object-fit: cover;
+  }
+
   /* Image inside overlay (never crop) */
   .clone-img{
     max-width: 100%;
@@ -172,10 +184,13 @@
   let dragActivated = false;
 
   // Pinch state
-  let pointers = new Map(); // id -> {x,y}
+  let pointers = new Map(); // id -> data
   let pinchStartDist = 0;
   let pinchStartScale = 1;
   let pinchCenter = { x: 0, y: 0 };
+  let pinchActive = false;
+
+  const BACKGROUND_TAP_CLOSE_PX = 12;
 
   const cssVar = (name, fallback) => {
     const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -190,6 +205,27 @@
   };
 
   const computeTargetRect = () => rect(targetBox);
+
+  let scrollLocked = false;
+  let previousBodyOverflow = '';
+  function lockScroll(){
+    if (scrollLocked) return;
+    previousBodyOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    scrollLocked = true;
+  }
+  function unlockScroll(){
+    if (!scrollLocked) return;
+    document.body.style.overflow = previousBodyOverflow;
+    scrollLocked = false;
+  }
+
+  const isRectOffscreen = r => (
+    r.bottom <= 0 ||
+    r.top    >= window.innerHeight ||
+    r.right  <= 0 ||
+    r.left   >= window.innerWidth
+  );
 
   /* ===== Clamp panning so no blank space shows ===== */
   function clampPan(dx, dy, scale){
@@ -229,6 +265,7 @@
     const from = rect(thumbFrame);
     overlay.classList.add('active');
     overlay.setAttribute('aria-hidden','false');
+    lockScroll();
 
     Object.assign(cloneBox.style, {
       width: from.w + 'px',
@@ -261,25 +298,156 @@
     if (animating) return; animating = true;
     overlay.classList.remove('zoomed','ready');
     isZoomed = false;
+
+    const previousCloneImgTransition = cloneImg.style.transition;
+    cloneImg.style.transition = 'none';
     applyTransform(0,0,1);
+    void cloneImg.offsetWidth;
 
-    const toRect = rect(thumbFrame);
-    cloneBox.style.width  = toRect.w + 'px';
-    cloneBox.style.height = toRect.h + 'px';
-    cloneBox.style.transform = `translate(${toRect.x}px, ${toRect.y}px) scale(1,1)`;
+    isDragging = false;
+    dragActivated = false;
+    pointers.clear();
+    pinchActive = false;
+    window.removeEventListener('pointermove', onPointerMove);
+    window.removeEventListener('pointerup', onPointerUp);
+    window.removeEventListener('pointercancel', onPointerUp);
 
-    cloneBox.addEventListener('transitionend', onClosed, { once: true });
-    function onClosed(){
-      overlay.classList.remove('active');
-      overlay.setAttribute('aria-hidden','true');
-      thumbFrame.style.visibility = 'visible';
-      overlay.removeEventListener('click', onOverlayBackgroundClick);
-      window.removeEventListener('keydown', onKey);
-      disableGestureHandlers();
-      // Return focus to thumb for accessibility
-      thumbFrame.focus?.({ preventScroll: true });
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const startRect = cloneBox.getBoundingClientRect();
+
+    const originalStyles = {
+      transition: cloneBox.style.transition,
+      position: cloneBox.style.position,
+      left: cloneBox.style.left,
+      top: cloneBox.style.top,
+      width: cloneBox.style.width,
+      height: cloneBox.style.height,
+      transform: cloneBox.style.transform,
+      zIndex: cloneBox.style.zIndex,
+      opacity: cloneBox.style.opacity,
+      pointerEvents: cloneBox.style.pointerEvents,
+      transformOrigin: cloneBox.style.transformOrigin,
+      background: cloneBox.style.background,
+    };
+
+    cloneBox.style.transition = 'none';
+    cloneBox.style.position = 'fixed';
+    cloneBox.style.left = '0px';
+    cloneBox.style.top = '0px';
+    cloneBox.style.width = startRect.width + 'px';
+    cloneBox.style.height = startRect.height + 'px';
+    cloneBox.style.transform = `translate3d(${startRect.left}px, ${startRect.top}px, 0) scale(1, 1)`;
+    cloneBox.style.zIndex = '9999';
+    cloneBox.style.opacity = '1';
+    cloneBox.style.pointerEvents = 'none';
+    void cloneBox.offsetWidth;
+
+    document.body.appendChild(cloneBox);
+    cloneBox.style.background = 'transparent';
+    cloneBox.classList.add('returning');
+
+    overlay.classList.remove('active');
+    overlay.setAttribute('aria-hidden','true');
+
+    overlay.removeEventListener('click', onOverlayBackgroundClick);
+    window.removeEventListener('keydown', onKey);
+    disableGestureHandlers();
+
+    let finished = false;
+    let cleanupTimer = null;
+    let handleTransitionEnd = null;
+
+    const restoreClone = () => {
+      cloneBox.style.transition = originalStyles.transition || '';
+      cloneBox.style.position = originalStyles.position;
+      cloneBox.style.left = originalStyles.left;
+      cloneBox.style.top = originalStyles.top;
+      cloneBox.style.width = originalStyles.width;
+      cloneBox.style.height = originalStyles.height;
+      cloneBox.style.transform = originalStyles.transform;
+      cloneBox.style.zIndex = originalStyles.zIndex;
+      cloneBox.style.opacity = originalStyles.opacity;
+      cloneBox.style.pointerEvents = originalStyles.pointerEvents;
+      cloneBox.style.transformOrigin = originalStyles.transformOrigin;
+      cloneBox.style.background = originalStyles.background;
+      cloneBox.classList.remove('returning');
+      overlay.insertBefore(cloneBox, overlay.firstChild);
+    };
+
+    const finalize = () => {
+      if (finished) return;
+      finished = true;
+      if (cleanupTimer !== null){
+        clearTimeout(cleanupTimer);
+        cleanupTimer = null;
+      }
+      if (handleTransitionEnd){
+        cloneBox.removeEventListener('transitionend', handleTransitionEnd);
+        handleTransitionEnd = null;
+      }
+      restoreClone();
+      cloneImg.style.transition = previousCloneImgTransition;
+      if (thumbFrame){
+        thumbFrame.style.visibility = 'visible';
+      }
+      unlockScroll();
+      if (thumbFrame?.isConnected){
+        thumbFrame.focus?.({ preventScroll: true });
+      }
       animating = false;
+    };
+
+    if (reduceMotion){
+      finalize();
+      return;
     }
+
+    requestAnimationFrame(() => {
+      if (finished) return;
+      if (startRect.width === 0 || startRect.height === 0){
+        finalize();
+        return;
+      }
+
+      const toRect = thumbFrame?.isConnected ? thumbFrame.getBoundingClientRect() : null;
+      const needsFallback = !toRect || toRect.width === 0 || toRect.height === 0 || isRectOffscreen(toRect);
+
+      if (needsFallback){
+        cloneBox.classList.remove('returning');
+        const shrinkRatio = 0.82;
+        const centerOffsetX = (startRect.width * (1 - shrinkRatio)) / 2;
+        const centerOffsetY = (startRect.height * (1 - shrinkRatio)) / 2;
+
+        cloneBox.style.transition = 'transform 200ms var(--ease), opacity 200ms var(--ease)';
+        void cloneBox.offsetWidth;
+        cloneBox.style.opacity = '0';
+        const fallbackX = startRect.left + centerOffsetX;
+        const fallbackY = startRect.top + centerOffsetY;
+        cloneBox.style.transform = `translate3d(${fallbackX}px, ${fallbackY}px, 0) scale(${shrinkRatio}, ${shrinkRatio})`;
+
+        handleTransitionEnd = (event) => {
+          if (event.target !== cloneBox) return;
+          finalize();
+        };
+        cloneBox.addEventListener('transitionend', handleTransitionEnd);
+        cleanupTimer = setTimeout(finalize, 350);
+        return;
+      }
+
+      cloneBox.style.transition = 'transform var(--dur) var(--ease)';
+      void cloneBox.offsetWidth;
+      const scaleX = toRect.width / startRect.width;
+      const scaleY = toRect.height / startRect.height;
+      cloneBox.style.transform = `translate3d(${toRect.left}px, ${toRect.top}px, 0) scale(${scaleX}, ${scaleY})`;
+
+      handleTransitionEnd = (event) => {
+        if (event.target !== cloneBox) return;
+        finalize();
+      };
+      cloneBox.addEventListener('transitionend', handleTransitionEnd);
+      const flightDuration = cssVar('--dur', 520);
+      cleanupTimer = setTimeout(finalize, flightDuration + 150);
+    });
   }
 
   function onOverlayBackgroundClick(e){
@@ -378,9 +546,20 @@
   }
 
   function trackPointerStart(e){
-    // Track for pinch only (need two pointers)
-    pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const isPrimaryButton = e.pointerType === 'mouse' ? e.button === 0 : true;
+    const data = {
+      x: e.clientX,
+      y: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      isBackgroundTap: isPrimaryButton && !cloneBox.contains(e.target),
+      wasPinch: false,
+    };
+    pointers.set(e.pointerId, data);
+
     if (pointers.size === 2){
+      pinchActive = true;
+      pointers.forEach(p => { p.wasPinch = true; });
       // Begin pinch
       const [a,b] = [...pointers.values()];
       pinchStartDist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -392,9 +571,11 @@
   function trackPointerMove(e){
     const p = pointers.get(e.pointerId);
     if (!p) return;
-    p.x = e.clientX; p.y = e.clientY;
+    p.x = e.clientX;
+    p.y = e.clientY;
 
     if (pointers.size === 2){
+      pinchActive = true;
       e.preventDefault(); // prevent page scroll
       const [a,b] = [...pointers.values()];
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
@@ -406,12 +587,34 @@
     }
   }
   function trackPointerEnd(e){
+    const info = pointers.get(e.pointerId);
     pointers.delete(e.pointerId);
+
     if (pointers.size < 2){
+      pinchActive = false;
       // End pinch: snap transform within clamps
       const c = clampPan(currentTx, currentTy, currentScale);
       applyTransform(c.dx, c.dy, currentScale);
       cloneImg.style.transition = '';
+    }
+
+    if (!info) return;
+
+    if (
+      !pinchActive &&
+      info.isBackgroundTap &&
+      !info.wasPinch &&
+      overlay.classList.contains('ready') &&
+      overlay.classList.contains('active') &&
+      e.type === 'pointerup'
+    ){
+      const deltaX = (e.clientX ?? info.x) - info.startX;
+      const deltaY = (e.clientY ?? info.y) - info.startY;
+      const moved = Math.hypot(deltaX, deltaY);
+      const isPrimaryRelease = e.pointerType === 'mouse' ? e.button === 0 : true;
+      if (moved <= BACKGROUND_TAP_CLOSE_PX && isPrimaryRelease){
+        closeZoom();
+      }
     }
   }
 
