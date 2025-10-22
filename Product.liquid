@@ -40,20 +40,35 @@
   /* ===== Overlay (solid white with fade) ===== */
   .overlay{
     position: fixed; inset: 0; z-index: 9999;
-    background: #fff;
     touch-action: none;          /* we manage gestures */
     overflow: hidden;
-    opacity: 0;
     pointer-events: none;
-    transition: opacity var(--fade-dur) var(--ease);
+    visibility: hidden;
+  }
+  .overlay.active,
+  .overlay.hiding{
+    visibility: visible;
   }
   .overlay.active{
-    opacity: 1;
     pointer-events: auto;
   }
   .overlay.hiding{
+    pointer-events: none;
+  }
+  .overlay-bg{
+    position: absolute;
+    inset: 0;
+    background: #fff;
     opacity: 0;
     pointer-events: none;
+    transition: opacity var(--fade-dur) var(--ease);
+    z-index: 0;
+  }
+  .overlay.active .overlay-bg{
+    opacity: 1;
+  }
+  .overlay.hiding .overlay-bg{
+    opacity: 0;
   }
 
   /* Animating box: flies from thumb → centered fit box */
@@ -71,6 +86,7 @@
     align-items: center;
     justify-content: center;
     background: #fff;            /* no flashes */
+    z-index: 1;
   }
 
   /* Image inside overlay (never crop) */
@@ -150,6 +166,7 @@
 
 <!-- ===== Overlay / cloning stage ===== -->
 <div id="overlay" class="overlay" aria-hidden="true" aria-modal="true" role="dialog">
+  <div class="overlay-bg" aria-hidden="true"></div>
   <div id="clone" class="clone">
     <img id="cloneImg" class="clone-img" alt="" />
   </div>
